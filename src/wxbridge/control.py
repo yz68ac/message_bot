@@ -1,0 +1,39 @@
+"""Local control protocol shared by the Web client and service supervisor."""
+import json
+import socket
+
+BOT, SESSION, HELPER, RECOVERY, WEB = 'bot', 'wechat', 'sender', 'recovery', 'web'
+COMPONENTS = (SESSION, HELPER, BOT, WEB, RECOVERY)
+WEB_ACTIONS = frozenset(('web_start', 'web_stop', 'web_restart', 'web_reload'))
+ONBOARDING_ACTIONS = frozenset(('account_login','account_bind'))
+ACTIONS = frozenset(('status', 'start', 'stop', 'apply')) | WEB_ACTIONS | ONBOARDING_ACTIONS
+MAX_FRAME = 65536
+DEFAULT_SOCKET = '/run/wxbridge-control/control.sock'
+
+
+def receive(stream):
+    data = bytearray()
+    while b'\n' not in data:
+        block = stream.recv(min(2048, MAX_FRAME + 1 - len(data)))
+        if not block:
+            raise ValueError('control_incomplete_frame')
+        data.extend(block)
+        if len(data) > MAX_FRAME:
+            raise ValueError('control_frame_too_large')
+    line, extra = data.split(b'\n', 1)
+    if extra:
+        raise ValueError('control_extra_frame')
+    return json.loads(line)
+
+
+def request(action, path=DEFAULT_SOCKET):
+    if action not in ACTIONS:
+        raise ValueError('invalid_control_action')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(20 if action in ONBOARDING_ACTIONS else 3)
+        stream.connect(str(path))
+        stream.sendall(json.dumps({'action': action}).encode() + b'\n')
+        result = receive(stream)
+    if not isinstance(result, dict) or set(result) != {'ok', 'result'} or result['ok'] is not True:
+        raise ValueError('control_request_failed')
+    return result['result']

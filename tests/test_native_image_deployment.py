@@ -1,0 +1,172 @@
+"""Optional helper assets and safe native callback drain; no service mutations."""
+import copy
+import importlib.util
+from pathlib import Path
+import tempfile
+import subprocess
+import unittest
+import hashlib
+import importlib.resources
+import json
+from unittest.mock import Mock, patch
+from tests.support.artifacts import adapter_artifact
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def script(name):
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), ROOT/'scripts'/name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+deployment = script('deploy-release.py')
+installer = script('install-native-helper.py')
+upgrade = script('upgrade-installation.py')
+
+
+class AdapterDeploymentContractTests(unittest.TestCase):
+    def test_scripts_read_the_same_contract_as_the_installed_adapter(self):
+        from adapter_wc import deployment as contract
+        self.assertEqual(installer.TEXT_ASSETS, contract.HELPER_ASSETS)
+        self.assertEqual(installer.IMAGE_ASSETS, contract.IMAGE_ASSETS)
+        self.assertEqual(deployment.ASSETS, contract.HELPER_ASSETS)
+        self.assertEqual(deployment.IMAGE_ASSETS, contract.IMAGE_ASSETS)
+        self.assertEqual(str(installer.IMAGE_RUNTIME_DIRECTORY), contract.IMAGE_RUNTIME_DIRECTORY)
+        self.assertEqual(upgrade.recovery_modules(ROOT)[len(upgrade.BOT_RECOVERY_MODULES):],
+                         tuple('adapter_wc/'+name for name in contract.RECOVERY_MODULES))
+        # compose.yaml is static YAML and cannot import the constant.
+        compose = (ROOT/'compose.yaml').read_text(encoding='utf-8')
+        self.assertIn(contract.IMAGE_RUNTIME_DIRECTORY+':size=16m,mode=0700', compose)
+
+    def test_malformed_contracts_are_rejected(self):
+        valid = dict(schema_version=1, helper_assets=['helper.py'], image_assets=['image_worker.py'],
+                     native_profile='native/profile.json', image_runtime_directory='/run/images',
+                     recovery_modules=['__init__.py'])
+        self.assertEqual(upgrade.deployment_contract(json.dumps(valid)), valid)
+        for change in (dict(schema_version=2), dict(helper_assets=['../helper.py']),
+                       dict(image_assets=['native/image_worker.py']), dict(recovery_modules=[]),
+                       dict(native_profile='/etc/profile.json'), dict(image_runtime_directory='/run/a/b'),
+                       dict(image_runtime_directory='/tmp/images')):
+            with self.assertRaisesRegex(ValueError, 'invalid_adapter_contract'):
+                upgrade.deployment_contract(json.dumps({**valid, **change}))
+        with self.assertRaisesRegex(ValueError, 'invalid_adapter_contract'):
+            upgrade.deployment_contract(b'not json')
+
+
+class NativeImageDeploymentTests(unittest.TestCase):
+    def test_pinned_adapter_updates_require_an_environment_upgrade(self):
+        adapter=json.loads((ROOT/'dependencies/adapter_wc.json').read_text(encoding='utf-8'))
+        manifest=dict(files={'dependencies/adapter_wc.json':dict(sha256='a'*64),
+                             'dependencies/'+adapter['wheel']:dict(sha256='b'*64)})
+        self.assertEqual(deployment.helper_changes(manifest,copy.deepcopy(manifest)),[])
+        changed=copy.deepcopy(manifest)
+        changed['files']['dependencies/adapter_wc.json']['sha256']='c'*64
+        with self.assertRaisesRegex(ValueError,'package_update_requires_upgrade_installation'):
+            deployment.helper_changes(manifest,changed)
+        with self.assertRaisesRegex(ValueError,'package_update_requires_upgrade_installation'):
+            deployment.require_source_only_update(['dependencies/adapter_wc.json'])
+
+    def test_pinned_helper_assets_come_from_the_verified_wheel(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.test-tmp') as folder:
+            stage=Path(folder);adapter_artifact(stage)
+            manifest=dict(files={p.relative_to(stage).as_posix():dict(sha256=hashlib.sha256(p.read_bytes()).hexdigest())
+                                 for p in (stage/'dependencies').iterdir()})
+            assets=importlib.resources.files('adapter_wc.native')
+            self.assertEqual(deployment.helper_body(stage,manifest,'agent.js'),assets.joinpath('agent.js').read_bytes())
+            installed=dict(files={name:hashlib.sha256(assets.joinpath(name).read_bytes()).hexdigest()
+                                  for name in deployment.IMAGE_ASSETS})
+            self.assertEqual(deployment.image_helper_changes(manifest,installed,stage=stage),[])
+
+    def test_old_installations_are_rejected_before_service_control(self):
+        with patch.object(deployment,'run',side_effect=subprocess.CalledProcessError(1,['metadata'])) as run:
+            with self.assertRaisesRegex(ValueError,'application_environment_upgrade_required'):
+                deployment.require_application_layout()
+        self.assertEqual(run.call_count,1)
+        with patch.object(deployment,'run',side_effect=[Mock(),Mock(stdout='python scripts/service.py run')]):
+            with self.assertRaisesRegex(ValueError,'service_entry_upgrade_required'):
+                deployment.require_application_layout()
+
+    def test_packaged_application_and_module_service_entry_are_accepted(self):
+        with patch.object(deployment,'run',side_effect=[Mock(),Mock(stdout='python -m wxbridge --root /opt/wxbridge')]):
+            deployment.require_application_layout()
+
+    def setUp(self):
+        (ROOT/'.test-tmp').mkdir(exist_ok=True)
+
+    def test_socket_startup_race_only_repeats_readiness_without_sending(self):
+        with patch.object(deployment, 'run', side_effect=[subprocess.CalledProcessError(1, ['readiness']), Mock()]) as run, \
+                patch.object(deployment.time, 'sleep') as sleep:
+            deployment.wait_native_ready()
+        self.assertEqual(run.call_count, 2)
+        self.assertTrue(all('readiness(c)' in call.args[-1] for call in run.call_args_list))
+        sleep.assert_called_once_with(.25)
+
+    def test_legacy_installation_and_config_do_not_enable_or_require_images(self):
+        cfg = dict(uid=995, allowed_chat_ids=['test@chatroom'], assets='/trusted',
+                   socket='/run/test/helper.sock', worker_timeout_seconds=15)
+        before = copy.deepcopy(cfg)
+        self.assertEqual(deployment.image_configuration(cfg), before)
+        self.assertEqual(cfg, before)
+        self.assertIsNone(installer.image_options(False, None, None, 995))
+        with self.assertRaisesRegex(ValueError, 'require_enable'):
+            deployment.image_configuration(cfg, account='wxid_test')
+
+    def test_explicit_account_binding_preserves_text_configuration(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'.test-tmp') as folder:
+            path = Path(folder)/'wxid_test'
+            path.mkdir()
+            uid = path.stat().st_uid
+            cfg = dict(uid=uid, allowed_chat_ids=['test@chatroom'], assets='/trusted',
+                       socket='/run/test/helper.sock', worker_timeout_seconds=15)
+            result = deployment.image_configuration(cfg, enable=True, account='wxid_test', account_root=path)
+            self.assertEqual({k: v for k, v in result.items() if k != 'image_download'}, cfg)
+            self.assertEqual(result['image_download'], dict(enabled=True, expected_account='wxid_test',
+                             account_root=str(path), timeout_seconds=30))
+            self.assertNotIn('image_download', cfg)
+            with self.assertRaisesRegex(ValueError, 'root_invalid'):
+                installer.image_options(True, 'wxid_test', path, uid+1)
+            with self.assertRaisesRegex(ValueError, 'root_invalid'):
+                installer.image_options(True, 'wxid_other', path, uid)
+            result['image_download']['timeout_seconds'] = 20
+            with self.assertRaisesRegex(ValueError, 'change_requires_review'):
+                deployment.image_configuration(result, enable=True, account='wxid_test', account_root=path)
+
+    def test_optional_assets_are_installed_even_when_app_manifest_has_not_changed(self):
+        files = {'wechat_linux/native/'+name: dict(sha256='a'*64)  # legacy in-tree release layout
+                 for name in deployment.ASSETS+deployment.IMAGE_ASSETS}
+        manifest = dict(files=files)
+        self.assertEqual(deployment.helper_changes(manifest, manifest), [])
+        old = dict(files={name: 'a'*64 for name in deployment.ASSETS})
+        self.assertEqual(deployment.image_helper_changes(manifest, old), list(deployment.IMAGE_ASSETS))
+        old['files'].update({name: 'a'*64 for name in deployment.IMAGE_ASSETS})
+        self.assertEqual(deployment.image_helper_changes(manifest, old), [])
+        old['files']['image_adapter.c'] = 'b'*64
+        self.assertEqual(deployment.image_helper_changes(manifest, old), ['image_adapter.c'])
+
+    def test_image_stop_requires_non_killing_policy_and_has_no_python_deadline(self):
+        for line in installer.IMAGE_RUNTIME_POLICY.splitlines():
+            self.assertIn(line.encode(), deployment.IMAGE_STOP_POLICY)
+        self.assertIn('RuntimeDirectoryPreserve=yes', installer.IMAGE_RUNTIME_POLICY)
+        unit = (Path(__file__).resolve().parents[1]/'scripts/systemd/wxbridge.service').read_text()
+        self.assertIn('ExecStartPre=/usr/bin/chmod 0750 /run/wxbridge-control', unit)
+        self.assertIn('RuntimeDirectoryMode=0700', installer.IMAGE_RUNTIME_POLICY)
+        with patch.object(deployment, 'active', return_value=True), \
+                patch.object(deployment, 'run', return_value=Mock(stdout='TimeoutStopUSec=infinity\nSendSIGKILL=no\n')), \
+                patch.object(deployment.subprocess, 'run') as stop:
+            deployment.stop_helper(images_enabled=True)
+            self.assertIsNone(stop.call_args.kwargs['timeout'])
+            self.assertEqual(stop.call_args.args[0], ['systemctl', 'stop', deployment.UNITS[0]])
+        for policy in ('TimeoutStopUSec=8s\nSendSIGKILL=yes\n', 'TimeoutStopUSec=infinity\nSendSIGKILL=yes\n'):
+            with self.subTest(policy=policy), patch.object(deployment, 'active', return_value=True), \
+                    patch.object(deployment, 'run', return_value=Mock(stdout=policy)), \
+                    patch.object(deployment.subprocess, 'run') as stop:
+                with self.assertRaisesRegex(ValueError, 'stop_policy_unsafe'):
+                    deployment.stop_helper(images_enabled=True)
+                stop.assert_not_called()
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wxbridge"
+dynamic = ["version"]
+description = "WeChat bot, instance management and local Web administration"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "model-provider>=0.3.1,<0.4",
+  "adapter_wc==0.4.2",
+  "Pillow>=11,<14",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "packaging>=24,<27",
+]
+
+[project.scripts]
+wxbridge = "wxbridge_cli.cli:main"
+
+[project.optional-dependencies]
+database = ["adapter_wc[database]"]
+analysis = ["adapter_wc[analysis]"]
+login = ["adapter_wc[login]"]
+
+[dependency-groups]
+test = [
+  "httpx>=0.28,<1",
+  "httpx2>=2,<3",
+]
+
+[tool.uv]
+required-version = ">=0.11"
+default-groups = []
+
+[tool.uv.sources]
+model-provider = { path = "src/provider", editable = true }
+adapter_wc = { path = "dependencies/adapter_wc-0.4.2-py3-none-any.whl" }
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+version = { attr = "wxbridge.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["wxbridge", "wxbridge.*", "wxbridge_cli", "wxbridge_cli.*", "web", "web.*"]
+namespaces = false
+
+[tool.setuptools.data-files]
+"share/wxbridge" = ["config.defaults.json"]
+"share/wxbridge/prompts" = ["prompts/*.md", "prompts/*.json"]
+"share/wxbridge/webui" = ["src/web/frontend/dist/*.html"]
+"share/wxbridge/webui/assets" = ["src/web/frontend/dist/assets/*"]

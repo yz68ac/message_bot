@@ -1,0 +1,11 @@
+{
+  "name": "adapter_wc",
+  "version": "0.4.2",
+  "wheel": "adapter_wc-0.4.2-py3-none-any.whl",
+  "sha256": "e4e70291e6d84d5f495885a08d9dd69183de786669b21539226c9f01ae4d8bfe",
+  "source": {
+    "repository": "../adapter_wc",
+    "commit": "f20fadafaaa27bc31f1145bdc31d805e39d19375",
+    "tag": "v0.4.2"
+  }
+}

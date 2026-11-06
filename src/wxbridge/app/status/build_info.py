@@ -1,0 +1,35 @@
+"""安全的运行版本标识；发布包优先使用清单，开发目录回退到 Git 提交号。"""
+from functools import lru_cache
+import hashlib
+import json
+import re
+import subprocess
+
+from wxbridge.config import PROJECT_ROOT
+from wxbridge.paths import SOURCE_ROOT
+
+
+@lru_cache(maxsize=1)
+def code_revision():
+    try:
+        manifest = PROJECT_ROOT/'release-manifest.json'
+        if manifest.is_file():
+            release = json.loads(manifest.read_text(encoding='utf-8'))
+            from wxbridge.release_integrity import installed_mismatches
+            if not release.get('files') or installed_mismatches(release['files']):
+                return 'unknown'
+            revision = release['commit']
+        else:
+            if SOURCE_ROOT is None:
+                return 'unknown'
+            result = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=PROJECT_ROOT,
+                                    capture_output=True, text=True, timeout=3, check=True)
+            revision = result.stdout.strip()
+        return revision if isinstance(revision, str) and re.fullmatch('[a-f0-9]{40}', revision) else 'unknown'
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return 'unknown'
+
+
+def runtime_identity(cfg):
+    from wxbridge.config import configuration_hash
+    return dict(commit=code_revision(), config_hash=configuration_hash(cfg))

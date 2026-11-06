@@ -1,0 +1,11 @@
+include pyproject.toml
+include README.md config.defaults.json
+recursive-include prompts *.md *.json
+recursive-include dependencies *.whl *.json
+recursive-include src/web/frontend/dist *.html *.css *.js
+exclude CONTRIBUTING.md
+prune tests
+prune src/provider
+prune scripts
+prune resources
+global-exclude __pycache__ *.py[cod]

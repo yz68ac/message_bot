@@ -1,0 +1,195 @@
+// 实例配置示例：一个 instance/<id>/config.json 对应一个群聊或私聊。
+// <id> 是本地实例目录名，不是微信群 ID；例如 instance/my-group/。
+// 本文件含 // 注释；实际 config.json 使用标准 JSON，复制时先移除注释。
+// 未填写的选项按配置类默认值补齐；config.defaults.json 是自动生成的参考快照。修改后需 apply 实例或重启机器人。
+//
+// 启用前填写 chat、models.reply.model，并在实例目录中准备 system.md。
+// 本例 profile.enabled=true，因此还必须填写 models.group_profile.model。
+// 群聊开启参与决策、个人记忆或头像分类时，也需显式填写对应角色的模型 ID。
+//
+// API 地址、密钥和代理在 provider 的 .env 中配置；根 config.json 可用 provider_env 指定该文件。
+// 数据库、账号资源和队列目录由根 config.json 管理，不能在实例中覆盖 queue.file / memory.directory。
+{
+  // 此实例的总开关。false 表示不启动监听，保留配置、已有队列和业务数据。
+  "enabled": false,
+
+  // 稳定聊天 ID：群聊填形如 123456789@chatroom，私聊填形如 wxid_example。
+  // 不填群名称、联系人昵称或备注；同一账号的不同实例不能绑定同一个聊天 ID。
+  "chat": "",
+
+  // 当前实例的自定义系统提示词文件；相对路径以本实例的 config.json 所在目录为基准。
+  "system_prompt_file": "system.md",
+
+  "target": {
+    // 两类请求共用：最近30条有效历史，最长回看30分钟；time仍为实际发送时间。
+    "context_recent_messages": 30,
+    "context_max_age_seconds": 1800,
+    // 补充最近3条机器人文本及每条前后各2条有效消息；填0关闭补充。
+    "context_bot_messages": 3,
+    // 聊天JSON的字符预算，包含字段、成员表和引用，不是token或整个API请求上限。
+    "context_max_chars": 15000,
+    // recent：按组/整条裁剪旧历史；strict：历史超限即停止。当前消息和明确引用不截断。
+    "context_budget_strategy": "recent",
+
+    // 候选消息按原始发送时间计算有效期；队列等待和重试不会重新计时。
+    "max_message_age_seconds": 90
+
+    // 可另加 bot_name 设置机器人称呼；称呼和真实 @ 都只作为判断线索，不强制回复。
+  },
+
+  // 这里填写 provider 连接名，不是模型 ID；内置 openai / anthropic / deepseek / gemini。
+  // 每实例的三条通道各复用自己的 client，同通道串行，跨通道和跨实例并行。
+  "model_clients": {
+    // 前台完整回复、联网及工具调用使用的连接。
+    "reply": "deepseek",
+
+    // 生图与改图连接：openai 使用 OpenAI Images；gemini 使用原生 generateContent。
+    "image": "openai",
+
+    // 参与判断、个人记忆、头像分类和群概况共用的连接，可分别使用不同模型。
+    "background": "deepseek"
+  },
+
+  // 各角色的模型和生成参数。启用的角色必须填所选连接可用的模型 ID，不会自动挑选模型。
+  // options 按角色独立生效，不会修改其他角色的模型或思考设置。
+  "models": {
+    // 图片角色使用 model_clients.image；image_generation.enabled=true 时必须填写模型 ID。
+    // 此处示例为 GPT。改用 Gemini 时，把连接改为 gemini，模型填 gemini-3.1-flash-image，
+    // options 换成 {"aspect_ratio":"1:1","timeout_seconds":180}，可另加 image_size。
+    // Gemini 文字使用兼容协议时，需在 provider .env 另设 GEMINI_IMAGE_BASE_URL，填原生服务根地址。
+    // 文字使用原生 gemini 协议时，图片地址默认沿用 GEMINI_BASE_URL；原生地址不附加 /v1 或 /v1beta。
+    // size/quality 为 OpenAI 参数，aspect_ratio/image_size 为 Gemini 参数，不可混用。
+    "image": {
+      "model": "",
+      "options": {"size": "1024x1024", "quality": "low", "timeout_seconds": 180}
+    },
+    // 完整回复角色：使用 model_clients.reply；实例启用时必须填写。
+    "reply": {
+      "model": "",
+      "options": {
+        // 请求的输出 token 上限，不是字数；实际支持范围取决于模型。
+        "max_tokens": 1200,
+
+        // 本角色请求的超时，单位为秒。
+        "timeout_seconds": 60,
+
+        // enabled / disabled：是否请求模型思考，开启前确认所选模型支持。
+        // 还可按模型支持添加 temperature、reasoning_effort；Anthropic 另支持
+        // thinking_mode 和 thinking_budget_tokens。不同协议不保证接受相同参数组合。
+        "thinking": "disabled"
+      }
+    },
+
+    // 群聊参与判断角色：使用 background；群聊 participation.enabled=true 时必须填写。
+    // 私聊合并消息后直接进入 reply，不调用参与模型，此处 model 可以留空。
+    // 每批只返回需要回应的候选消息 ID 列表；所有获准消息都交给完整 reply 流程。
+    "participation": {
+      "model": "",
+      // 参数含义同 reply.options；这里的预算和思考设置独立于前台回复。
+      "options": {
+        "max_tokens": 256,
+        "timeout_seconds": 20,
+        "thinking": "disabled"
+      }
+    },
+
+    // 个人记忆整理角色：使用 background；memory.enabled=true 时必须填写。
+    "memory": {
+      "model": "",
+      // 参数含义同 reply.options。
+      "options": {
+        "max_tokens": 1200,
+        "timeout_seconds": 60,
+        "thinking": "disabled"
+      }
+    },
+
+    // 头像视觉分类角色：使用 background；需支持图片输入。
+    // memory.enabled 和 memory.avatar.enabled 都为 true 时必须填写。
+    "avatar": {
+      "model": "",
+      // 参数含义同 reply.options。
+      "options": {
+        "max_tokens": 1200,
+        "timeout_seconds": 60,
+        "thinking": "disabled"
+      }
+    },
+
+    // 群/会话概况整理角色：使用 background；profile.enabled=true 时必须填写。
+    // 与个人记忆是两项功能，关闭 memory 不会关闭群概况。
+    "group_profile": {
+      "model": "",
+      // 参数含义同 reply.options。
+      "options": {
+        "max_tokens": 1800,
+        "timeout_seconds": 45,
+        "thinking": "disabled"
+      }
+    }
+  },
+
+  // 支持用户明确要求的文生图及引用改图，每轮最多一个任务；使用原生发送接口并核对发出记录。
+  // 改图需 vision.enabled=true、回复模型支持图片和工具，并在本轮实际读取到引用原图。
+  // 普通上下文图片不是改图来源；缺少原图或编辑失败时不会自动改用文生图。
+  // 生图独立排队，不占用文字回复线程；请求结果不确定时不会自动再生成一遍。
+  "image_generation": {"enabled": false},
+
+  "vision": {
+    // 图片理解总开关；需要 models.reply.model 支持图片输入。
+    "enabled": true,
+    // 默认 false：只处理明确引用的图片；true：额外附带当前会话上下文内的图片。
+    // 不扩大 target 的回看窗口；引用优先，其余按最近图片补充。
+    "context_images_enabled": false,
+    // 引用与自动上下文共用每次张数上限，范围 1–4；字节上限最大为 8 MiB。
+    "max_images": 4,
+    "max_image_bytes": 8388608,
+    // 这是附送给模型的细节提示；图片用量不包含在 target.context_max_chars 中。
+    "detail": "original",
+    // 默认仅读取本地缓存；开启清晰图片下载前需完成相应 helper/桌面后端配置。
+    "download_enabled": false
+  },
+
+  "memory": {
+    // 记忆整理仍参考5分钟，不随聊天回看范围扩大；被动学习另有自己的窗口。
+    "context_window_seconds": 300,
+    // 个人记忆及相关学习的总开关。关闭后不向请求附加个人记忆，已有数据不会自动删除。
+    "enabled": false,
+    "avatar": {
+      // 在个人记忆启用时，额外分类成员头像的视觉特征；不凭头像推断性格或好感度。
+      "enabled": false
+    }
+  },
+
+  "participation": {
+    // 微信消息自动回复总开关，群聊与私聊都生效；关闭后不自动回复。
+    // 群聊先做参与判断：真实 @、称呼、兴趣均为线索，模型仍可选择沉默。
+    // 私聊跳过参与判断，短暂合并有效消息后直接进入完整 reply 流程。
+    "enabled": false,
+
+    // 群聊合并为一次判断请求；私聊合并为一次完整回复。0 表示不额外等待。
+    // 不把不同用户的问题合成一个回复任务。
+    "debounce_seconds": 2,
+
+    // 从本批首条消息接收起最多等待多久；持续有新消息也不会无限推迟处理。
+    // 必须大于或等于 debounce_seconds。
+    "max_wait_seconds": 5,
+
+    // 每批最多处理多少条消息，范围 1–32；每条消息分别记录处理结果。
+    "max_batch_messages": 8,
+
+    // 额外称呼，例如 ["助手", "小助手"]；供模型结合上下文识别，不是关键词白名单。
+    // 性格、爱好和交流习惯仍统一写在上方 system_prompt_file 指定的文件中。
+    "address_names": [],
+
+    // 是否将本聊天中拍向机器人账号的拍一拍纳入决策；开启也不代表必定回复。
+    "pat_enabled": true
+  },
+
+  "profile": {
+    // 维护本实例目录下的 profile.json，包含会话概况和以 wxid 为键的成员 alias。
+    // 默认首次读取近 7 天最多 300 条消息，随后分批更新；不因此回复历史消息。
+    // 可在此覆盖 initial_history_days、initial_max_messages、batch_size 等默认参数。
+    "enabled": true
+  }
+}

@@ -1,0 +1,189 @@
+"""Provider boundary contract tests; synthetic HTTP and tools only."""
+from wxbridge.ai.roles import provider_settings
+from tests.support.configuration import replace_config, update_config, snapshot
+from tests.support.model_support import default_config
+from contextlib import nullcontext
+from copy import deepcopy
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import urllib.error
+import unittest
+from unittest.mock import Mock, patch
+
+from tests.support.model_support import ClientFixture, ModelError, capture_metrics
+from provider.adapters import ModelRequest, ModelResult, get_protocol_adapter
+from tests.support.configuration import validate_models
+from wxbridge.ai.tools.web import SearchClient, SearchError
+from tests.support.tool_support import run_answer
+from wxbridge.config import default_document
+from provider import create_client, load_config as provider_config
+from wxbridge.ai.roles import model_settings
+
+ROOT=Path(__file__).resolve().parents[1]
+
+
+class SyntheticWireAdapter:
+    """A deliberately different protocol, not an implementation of any vendor."""
+
+
+    def build_payload(self, settings, request):
+        # The tool loop is unaware of the provider's continuation token format.
+        turns=[]
+        for message in request.messages:
+            turn=deepcopy(message)
+            if '_continuation' in turn:
+                turn['wire_state']=turn.pop('_continuation')
+            turns.append(turn)
+        return dict(engine=settings['model'],turns=turns,functions=request.tools,choice=request.tool_choice)
+
+    def parse_response(self, data):
+        message=dict(content=data['answer'],tool_calls=data.get('operations',[]))
+        if 'wire_state' in data:message['_continuation']=data['wire_state']
+        return ModelResult(message,'tool_calls' if message['tool_calls'] else 'stop',dict(total_tokens=7))
+
+    def assistant_message(self, message):
+        return {'role':'assistant',**deepcopy(message)}
+
+
+def response(data):
+    obj=Mock();obj.__enter__=Mock(return_value=obj);obj.__exit__=Mock(return_value=False)
+    obj.read.return_value=json.dumps(data).encode()
+    return obj
+
+
+class ProviderTests(unittest.TestCase):
+    def client(self, cfg=None, **options):
+        with nullcontext():
+            return ClientFixture(cfg or default_config(),**options)
+
+    def test_business_boundary_reuses_provider_errors_and_request_types(self):
+        from provider import ModelError as ProviderError, ModelRequest as ProviderRequest
+        self.assertIs(ModelError,ProviderError)
+        self.assertIs(ModelRequest,ProviderRequest)
+
+    def test_chat_completions_connection_and_background_credentials_are_independent(self):
+        config=provider_config(ROOT/'tests/.synthetic-provider.env', environ={
+            'OPENAI_PROTOCOL':'openai', 'OPENAI_BASE_URL':'https://synthetic.example/v1',
+            'OPENAI_API_KEY':'other-key', 'DEEPSEEK_API_KEY':'original-key'})
+        with create_client('openai',config=config) as client, create_client('deepseek',config=config) as memory:
+            self.assertEqual(client.api_key,'other-key');self.assertEqual(memory.api_key,'original-key')
+            self.assertEqual(str(client._sdk_client.base_url).rstrip('/')+'/chat/completions','https://synthetic.example/v1/chat/completions')
+
+    def test_provider_payloads_keep_images_tools_and_do_not_mutate_inputs(self):
+        messages=[dict(role='user',content=[dict(type='text',text='PRIVATE_CHAT'),
+                  dict(type='image_url',image_url=dict(url='data:image/png;base64,AAAA',detail='original'))])]
+        tools=[dict(type='function',function=dict(name='lookup',parameters={'type':'object'}))]
+        original=deepcopy((messages,tools));settings=provider_settings(model_settings(default_config()))
+        for provider in ('deepseek','openai','openai_compatible'):
+            adapter=get_protocol_adapter(provider);wire=adapter.build_payload(settings,ModelRequest(messages,tools,'none'))
+            self.assertEqual(wire['messages'],messages);self.assertEqual(wire['tools'],tools)
+            self.assertEqual(wire['tool_choice'],'none')
+            self.assertEqual('thinking' in wire,provider=='deepseek')
+            wire['messages'][0]['content'].clear();wire['tools'].clear()
+            self.assertEqual((messages,tools),original)
+
+    def test_alternative_wire_protocol_can_run_the_existing_search_loop(self):
+        cfg=default_config();cfg = replace_config(cfg, 'search.backend', 'auto')
+        client=self.client(cfg,adapter=SyntheticWireAdapter())
+        tool=dict(id='call-1',type='function',function=dict(name='web_search',arguments='{"query":"synthetic"}'))
+        replies=[dict(answer='',operations=[tool],wire_state='PRIVATE_CONTINUATION'),
+                 dict(answer='合成结论')]
+        backend=Mock();backend.search.return_value=dict(results=[dict(url='https://example.com/source',title='合成来源')])
+        with patch.object(client, '_post', side_effect=replies) as post,capture_metrics() as metrics:
+            text,meta=run_answer(cfg,client,[dict(role='user',content='PRIVATE_CHAT')],search_client=backend)
+        self.assertEqual(post.call_count,2);self.assertTrue(meta['attempted'])
+        self.assertTrue(text.startswith('合成结论'));self.assertNotIn('PRIVATE',text)
+        second=post.call_args_list[1].args[0]
+        self.assertEqual(second['turns'][-2]['wire_state'],'PRIVATE_CONTINUATION')
+        self.assertEqual(second['turns'][-1]['tool_call_id'],'call-1')
+        self.assertNotIn('messages',second);self.assertNotIn('thinking',second)
+        self.assertNotIn('PRIVATE',json.dumps(metrics))
+
+    def test_deepseek_tool_continuation_keeps_hidden_state_without_mutation(self):
+        message=dict(content=None,tool_calls=[{'id':'synthetic'}],reasoning_content='PRIVATE_REASONING')
+        turn=self.client().assistant_message(message)
+        self.assertEqual(turn['reasoning_content'],'PRIVATE_REASONING');self.assertEqual(turn['role'],'assistant')
+        turn['tool_calls'].clear();self.assertEqual(message['tool_calls'],[{'id':'synthetic'}])
+
+    def test_expired_budget_after_encoding_never_starts_http(self):
+        adapter=SyntheticWireAdapter();client=self.client(adapter=adapter)
+        with patch('provider.client.time.monotonic',side_effect=[1,2,4,4]),patch.object(client,'_post') as post:
+            with self.assertRaisesRegex(ModelError,'deadline_exceeded'):client.request([],deadline=3)
+        post.assert_not_called()
+
+    def test_malformed_content_is_safe_and_request_result_repr_hide_bodies(self):
+        adapter=get_protocol_adapter('deepseek')
+        for message in ({'content':{'PRIVATE':'body'}},{'content':['PRIVATE']},{'tool_calls':{'PRIVATE':'tool'}}):
+            with self.subTest(message=message),self.assertRaisesRegex(ModelError,'invalid_response'):
+                adapter.parse_response(dict(choices=[dict(message=message)]))
+        request=ModelRequest([dict(content='PRIVATE_CHAT')])
+        result=adapter.parse_response(dict(choices=[dict(message=dict(content='PRIVATE_REPLY',reasoning_content='PRIVATE_REASONING'))],
+                                   usage=dict(prompt_tokens=True,completion_tokens=-1,total_tokens=3,extra='PRIVATE')))
+        self.assertEqual(result.usage,dict(total_tokens=3))
+        self.assertNotIn('PRIVATE',repr(request));self.assertNotIn('PRIVATE',repr(result))
+
+
+    def test_search_uses_its_provider_connection_instead_of_chat_credentials(self):
+        cfg=default_config();cfg = replace_config(cfg, 'model_clients.reply', 'openai')
+        for key in ('search-key', ''):
+            config=provider_config(ROOT/'tests/.synthetic-provider.env', environ={
+                'DEEPSEEK_API_KEY':key, 'OPENAI_API_KEY':'chat-key'})
+            with patch('wxbridge.ai.tools.web.load_config',return_value=config):
+                if key: self.assertEqual(SearchClient(cfg).api_key,'search-key')
+                else:
+                    with self.assertRaisesRegex(SearchError,'missing_api_key'):SearchClient(cfg)
+
+    def test_role_proxy_is_local_to_its_client_and_keeps_background_transport(self):
+        config=provider_config(ROOT/'tests/.synthetic-provider.env', environ={
+            'OPENAI_API_KEY':'synthetic-key','DEEPSEEK_API_KEY':'synthetic-key',
+            'OPENAI_PROXY_URL':'http://127.0.0.1:10808'})
+        original=deepcopy(dict(os.environ))
+        with create_client('openai',config=config) as chat, create_client('deepseek',config=config) as memory:
+            with patch('provider.transport.sdk_send',return_value={'ok':True}) as sdk_send:
+                chat._post({},2);memory._post({},2)
+            self.assertEqual(chat.cfg['proxy_url'],'http://127.0.0.1:10808')
+            self.assertIs(sdk_send.call_args_list[0].args[1], chat._sdk_client)
+            self.assertEqual(sdk_send.call_args_list[1].args[2], 'deepseek')
+            self.assertFalse(memory.cfg['proxy_url'])
+        self.assertEqual(dict(os.environ),original)
+
+    def test_proxy_failure_never_falls_back_or_exposes_error_contents(self):
+        config=provider_config(ROOT/'tests/.synthetic-provider.env',environ={
+            'DEEPSEEK_API_KEY':'synthetic-key','DEEPSEEK_PROXY_URL':'http://127.0.0.1:10808'})
+        with create_client('deepseek',config=config) as client:
+            with patch('provider.transport.sdk_send',side_effect=ModelError('connection_failed', retryable=True)) as send:
+                with self.assertRaisesRegex(ModelError,'connection_failed') as caught:client._post({},2)
+            self.assertEqual(client.cfg['proxy_url'],'http://127.0.0.1:10808')
+            self.assertEqual(send.call_count, 1)
+            self.assertNotIn('PRIVATE',str(caught.exception))
+
+    def test_removed_role_connection_settings_are_rejected_without_echoing_credentials(self):
+        for value in ('socks5://127.0.0.1:10808','https://proxy.example:443',
+                      'http://PRIVATE:SECRET@proxy.example:80','http://proxy.example/path',
+                      'http://proxy.example?PRIVATE','http://proxy.example:bad','http://proxy.example:0','',False,[],
+                      'http://proxy.example\n'):
+            cfg=default_config();cfg = replace_config(cfg, 'models.reply', {'proxy_url':value})
+            with self.subTest(value=value),self.assertRaises(ValueError) as caught:validate_models(cfg)
+            self.assertNotIn('PRIVATE',str(caught.exception));self.assertNotIn('SECRET',str(caught.exception))
+
+    def test_provider_import_is_isolated_from_bot_config_and_runtime(self):
+        code='''
+import sys
+sys.path.insert(0,sys.argv[1])
+from provider.adapters import get_protocol_adapter, ModelRequest
+assert 'wxbridge.config' not in sys.modules
+assert 'wxbridge.ai.client' not in sys.modules
+assert not any(n.startswith(('frida','gi','adapter_wc')) for n in sys.modules)
+assert callable(get_protocol_adapter('deepseek').build_payload)
+'''
+        run=subprocess.run([sys.executable,'-I','-B','-c',code,str(ROOT/'src')],capture_output=True,timeout=10)
+        self.assertEqual(run.returncode,0,run.stderr.decode())
+
+    def test_business_entrypoints_use_neutral_names_and_search_has_no_vendor_replay(self):
+        for name in ('src/wxbridge/ai/background/avatars.py','src/wxbridge/ai/background/memory.py','src/wxbridge/ai/background/participation.py','src/wxbridge/app/execution/workers.py'):
+            text=(ROOT/name).read_text(encoding='utf-8')
+            self.assertNotIn('ClientFixture',text)
+        self.assertNotIn('reasoning_content',(ROOT/'src/wxbridge/ai/reply/runner.py').read_text(encoding='utf-8'))

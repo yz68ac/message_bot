@@ -1,0 +1,199 @@
+"""微信提交与数据库确认；只依赖发送所需的配置、存储和工作进程工厂。"""
+from __future__ import annotations
+from wxbridge.config import InstanceConfig
+
+import json
+import logging
+import time
+import uuid
+from wxbridge.app.delivery.confirmation import scan_confirmation
+from adapter_wc.native import NativeError, text_parts
+from wxbridge.app.tasks.policy import submission_failure
+from wxbridge.wechat.transport import native as native_transport
+
+log = logging.getLogger('wxbridge')
+
+
+class DeliveryController:
+    def __init__(self, cfg: InstanceConfig, journal, store, chat_id, chat_title, *, logger=None):
+        self.cfg, self.journal, self.store = cfg, journal, store
+        self.chat_id, self.chat_title, self.job = chat_id, chat_title, None
+        self.log = logger if logger is not None else log
+
+    def poll_result(self):
+        if self.job is None:
+            return
+        task_id, part, job = self.job
+        result = job.poll()
+        if result is None:
+            return
+        job.close()
+        self.job = None
+        task = self.journal.task(task_id)
+        metadata = result.get("ui") or {"error": result.get("error", "UIError")}
+        # 发出记录可能比 UI 读回先到达；即使已确认，也保留动作核验元数据。
+        with self.journal.db:
+            task["last_ui"] = metadata
+            if metadata.get('timings_ms'):
+                self.journal.set('last_native_timings', metadata['timings_ms'])
+            self.journal.put(task)
+        self.log.info("发送操作 task=%s part=%s metadata=%s", task_id, part,
+                 json.dumps(metadata, ensure_ascii=False))
+        if not task["intent"] or task["intent"]["part"] != part:
+            return
+        operation = metadata.get("operation") or {}
+        if task.get('external_request_id') and not result['ok'] and operation.get('submitted') is False:
+            with self.journal.db:
+                task.update(phase='done',intent=None,chunks=[],triggers=[],blocked_reason='',
+                            external_error=metadata.get('error','native_rejected'),completed_at=time.time())
+                self.journal.put(task)
+            return
+        definite, retryable = submission_failure(metadata)
+        attempts = task.get('pre_submit_attempts', 0)
+        maximum = 3 if metadata.get('error', '').startswith('native_') else 2
+        if not result['ok'] and definite and retryable and attempts < maximum:
+            with self.journal.db:
+                delay = min(30, 2**(attempts+1)) if maximum == 3 else 2
+                task.update(intent=None, blocked_reason="", retry_at=time.time()+delay,
+                            pre_submit_attempts=attempts+1)
+                self.journal.put(task)
+            self.log.info("提交前失败，安全等待重试 task=%s part=%s attempt=%s", task_id, part, task["pre_submit_attempts"])
+            return
+        if not result['ok'] and definite and metadata.get('error', '').startswith('native_'):
+            # A proven non-submission cannot acquire an outbound confirmation.
+            # Retain an explicit terminal result, but do not block unrelated tasks.
+            with self.journal.db:
+                failure = dict(task_id=task_id, part=part, error=metadata.get('error', 'send_failed'),
+                               at=time.time(), submitted=False, attempts=attempts+1)
+                task.update(phase='done', intent=None, chunks=[], triggers=[], blocked_reason='',
+                            delivery_error=failure['error'], completed_at=time.time())
+                self.journal.set('last_delivery_failure', failure)
+                self.journal.put(task)
+            self.log.warning('发送明确失败 task=%s part=%s error=%s', task_id, part, failure['error'])
+            return
+        with self.journal.db:
+            task["intent"]["deadline"] = time.time() + float(self.cfg.account.ui.send_confirm_timeout_seconds)
+            task["intent"]["ui"] = metadata
+            self.journal.put(task)
+
+    def confirm(self, *, memory=False):
+        task = self.journal.head()
+        if not task or not task["intent"]:
+            return
+        intent = task['intent']
+        now = time.time()
+        intake = self.journal.get('cursor', 0)
+        if (now < intent.get('next_check_at', 0)
+                and intake <= intent.get('seen_intake', -1)):
+            return
+        text = self.journal.outgoing_text(task)
+        image = task.get('images', [])[intent['part']] if task.get('images') and intent.get('kind') != 'notice' else None
+        ack = scan_confirmation(self.store, task.get('delivery_chat_id', self.chat_id),
+                                self.store.self_wxid, text, intent, now, blocked=bool(task['blocked_reason']), image=image)
+        if ack is not None:
+            options = {}
+            if image and self.cfg.vision.enabled and (self.cfg.vision.context_images_enabled or self.cfg.image_generation.enabled):
+                options['image_context_seconds'] = self.cfg.target.context_max_age_seconds
+            self.journal.acknowledge(task['id'], ack, now, memory=memory, **options)
+            self.log.info('发送确认 task=%s part=%s local_id=%s', task['id'], intent['part'], ack)
+            return
+        if intent["deadline"] is not None and time.time() >= intent["deadline"]:
+            with self.journal.db:
+                code = (intent.get("ui") or {}).get("error", "no_outbound_record")
+                task["blocked_reason"] = "send_confirmation_timeout:" + code + ": 无匹配发出记录，暂停发送，继续接收"
+                self.journal.put(task)
+        with self.journal.db:
+            intent.update(seen_intake=intake, next_check_at=now+(15 if task['blocked_reason'] else 0))
+            self.journal.put(task)
+
+    def _candidate(self, now):
+        task = self.journal.head()
+        if not task or task["phase"] not in ("queued", "external") or task["intent"] or task["blocked_reason"]:
+            return
+        notice = (task.get("notice") or {}).get("state") == "pending"
+        if notice and not self.cfg.search.feedback_enabled:
+            # 关闭提示后不补发旧的未提交提示；已有意图在上面的分支等待数据库确认。
+            with self.journal.db:
+                task.pop('notice', None)
+                self.journal.put(task)
+            notice = False
+        if not notice and task["generation"] != "ready":
+            return
+        if now < task.get("retry_at", 0):
+            return
+        if now - self.journal.get("last_success", 0) < float(self.cfg.target.cooldown_seconds):
+            return
+        return task, notice
+
+    def send(self, job_factory, validate=None, *, refresh=None):
+        if self.job is not None:
+            return
+        candidate = self._candidate(time.time())
+        if candidate is None:
+            return
+        task, notice = candidate
+        if refresh:
+            refresh()
+            candidate = self._candidate(time.time())
+            if candidate is None:
+                return
+            current, notice = candidate
+            if (current['id'], current['version']) != (task['id'], task['version']):
+                return
+            task = current
+        now = time.time()
+        if validate and not validate(task, now):
+            return
+        if self.cfg.account.ui.dry_run:
+            with self.journal.db:
+                if notice:
+                    task["notice"].update(state="confirmed", text="")
+                else:
+                    task.update(phase="done", triggers=[], chunks=[])
+                self.journal.put(task)
+            self.log.info("模拟完成 task=%s version=%s", task["id"], task["version"])
+            return
+        native = native_transport(self.cfg, external=bool(task.get('external_request_id')))
+        image = task.get('images', [])[task['next_chunk']] if task.get('images') and not notice else None
+        if image and not native:
+            with self.journal.db:
+                task.update(phase='done', chunks=[], delivery_error='image_requires_native_service')
+                self.journal.put(task)
+            return
+        if native and not notice and not task.get('external_request_id') and not image:
+            # Preserve acknowledged prefixes; only adapt not-yet-submitted text.
+            with self.journal.db:
+                start=task['next_chunk']
+                try:
+                    parts=[part for chunk in task['chunks'][start:] for part in text_parts(chunk,self.cfg.account.helper_transport.max_text_bytes)]
+                except (NativeError,UnicodeError) as exc:
+                    task['blocked_reason']='native_text_limit:'+getattr(exc,'code','invalid_text')
+                    self.journal.put(task)
+                    return
+                if parts!=task['chunks'][start:]:
+                    task['chunks']=task['chunks'][:start]+parts
+                    self.journal.put(task)
+        baseline = self.store.last_local_id(task.get('delivery_chat_id',self.chat_id))
+        timeout = float(self.cfg.account.ui.send_confirm_timeout_seconds)
+        options = dict(transport='native_service', request_id=task.get('external_request_id') or 'bot:'+uuid.uuid4().hex) if native else {}
+        self.journal.intend(task["id"], baseline, now, timeout, kind="notice" if notice else "reply", **options)
+        try:
+            current = self.journal.task(task["id"])
+            if image:
+                job = job_factory('native_send_image', (self.cfg, current.get('delivery_chat_id', self.chat_id),
+                    image, current['intent']['request_id']), timeout=30)
+            elif current['intent'].get('transport')=='native_service':
+                job = job_factory('native_send', (self.cfg, current.get('delivery_chat_id',self.chat_id),
+                    self.journal.outgoing_text(current),
+                    current['intent']['request_id']), timeout=30)
+            else:
+                job = job_factory("send", (self.cfg, self.chat_title, self.journal.outgoing_text(current)), timeout=30)
+            self.job = (task["id"], current["intent"]["part"], job)
+            self.log.info("发送意图 task=%s version=%s kind=%s part=%s baseline=%s", task["id"], task["version"],
+                     current["intent"]["kind"], current["intent"]["part"], baseline)
+        except Exception as exc:
+            with self.journal.db:
+                current = self.journal.task(task["id"])
+                current["intent"]["deadline"] = now + timeout
+                current["intent"]["ui"] = {"error": type(exc).__name__}
+                self.journal.put(current)

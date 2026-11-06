@@ -1,0 +1,27 @@
+"""Shared metadata paths for boot recovery and release checks, without readers."""
+from pathlib import Path
+
+from wxbridge.config import load_config
+
+
+def configured_instances(app, runtime, *, include_disabled=False):
+    app, runtime = Path(app), Path(runtime)
+    cfg = load_config(app/'config.json')
+    return [(e.id, e, False) for e in cfg.instances.values()
+            if e.enabled or include_disabled and Path(e.paths.queue_file).exists()]
+
+
+def live_status_path(app, runtime):
+    cfg = load_config(Path(app)/'config.json')
+    return Path(cfg.paths.state_file).parent/'account-status.json'
+
+
+def queue_paths(app, runtime):
+    from wxbridge.instances import queue_candidates
+    groups = configured_instances(app, runtime)
+    active = {Path(cfg.paths.queue_file): identifier for identifier, cfg, _ in groups}
+    cfg = load_config(Path(app)/'config.json')
+    for path in queue_candidates(cfg):
+        if path.exists() and path not in active:
+            active[path] = 'inactive:'+path.parent.name
+    return active
