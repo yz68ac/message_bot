@@ -110,6 +110,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(release['verify'](self.bundle),manifest)
 
     def test_extract_verifies_then_unpacks_a_new_stage_with_modes(self):
+        # Match the working tree to the index so Linux (core.filemode=true) sees a clean checkout.
+        (self.root/'scripts/test-offline.py').chmod(0o755)
         self.git('update-index', '--chmod=+x', 'scripts/test-offline.py')
         self.commit_if_changed()
         manifest = self.build()
