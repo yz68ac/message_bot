@@ -39,10 +39,9 @@ def require_memory_directory(value: str) -> None:
 
 
 def require_runtime_directory(value: str) -> None:
-    """Queues stay in private tmpfs; native installs retain their noswap policy."""
-    from wxbridge.host.layout import container
-    if not container():
-        return require_memory_directory(value)
+    """Queues stay in private tmpfs; key material uses the stricter noswap mount."""
+    if sys.platform != "linux":
+        raise ValueError("runtime_requires_linux_tmpfs")
     from adapter_wc.runtime import require_private_directory
     path = Path(value).resolve()
     path.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -75,13 +75,11 @@ class ContainerTests(unittest.TestCase):
             self.assertEqual((root/'settings/web-password').read_bytes(),password)
             self.assertEqual((root/'provider.env').read_text(),'DEEPSEEK_API_KEY=synthetic')
 
-    def test_onboarding_is_disabled_outside_container_or_without_control(self):
+    def test_onboarding_is_disabled_without_control_or_for_unknown_actions(self):
         from web.backend.services import ServiceManager
         from wxbridge.management.repository import ManagementError
-        with patch.dict(os.environ,{'WXBRIDGE_RUNTIME':'systemd'}):
-            with self.assertRaises(ManagementError):ServiceManager(allow_control=True).onboarding('login')
-        with patch.dict(os.environ,{'WXBRIDGE_RUNTIME':'container'}):
-            with self.assertRaises(ManagementError):ServiceManager(allow_control=False).onboarding('bind')
+        with self.assertRaises(ManagementError):ServiceManager(allow_control=False).onboarding('bind')
+        with self.assertRaises(ManagementError):ServiceManager(allow_control=True).onboarding('shell')
 
     def test_binding_rejects_active_bot_before_reading_account_data(self):
         from wxbridge.host.onboarding import bind_configured_account
@@ -114,8 +112,7 @@ class ContainerTests(unittest.TestCase):
 
     def test_only_nonsecret_connection_overrides_are_inherited(self):
         from wxbridge.host.layout import environment
-        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'container',
-                                    'OPENAI_BASE_URL':'http://host.docker.internal:8317/v1',
+        with patch.dict(os.environ, {'OPENAI_BASE_URL':'http://host.docker.internal:8317/v1',
                                     'OPENAI_API_KEY':'synthetic-private-value'}):
             self.assertIn('OPENAI_BASE_URL', environment())
             self.assertNotIn('OPENAI_API_KEY', environment())
@@ -126,14 +123,12 @@ class ContainerTests(unittest.TestCase):
         self.assertTrue(is_noswap_tmpfs(Path('/run/queue'), mounts, require_noswap=False))
         self.assertFalse(is_noswap_tmpfs(Path('/run/disk/queue'), mounts, require_noswap=False))
 
-    def test_container_layout_and_bind_policy_do_not_change_native_defaults(self):
-        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'container'}):
-            self.assertEqual(config_root(),Path('/var/lib/wxbridge-config'))
-            self.assertEqual(sensitive_root(),Path('/run/wxbridge-sensitive'))
-            self.assertEqual(bind_host('0.0.0.0'),'0.0.0.0')
-        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'systemd'}):
-            self.assertEqual(config_root(),Path('/opt/wxbridge'))
-            with self.assertRaises(ValueError):bind_host('0.0.0.0')
+    def test_container_layout_and_bind_policy(self):
+        self.assertEqual(config_root(),Path('/var/lib/wxbridge-config'))
+        self.assertEqual(sensitive_root(),Path('/run/wxbridge-sensitive'))
+        self.assertEqual(bind_host('0.0.0.0'),'0.0.0.0')
+        for public in ('8.8.8.8','::'):
+            with self.subTest(host=public),self.assertRaises(ValueError):bind_host(public)
 
     def test_project_never_overwrites_existing_data(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'.test-tmp') as temporary:
@@ -168,13 +163,13 @@ class ContainerTests(unittest.TestCase):
 
     def test_dispatch_removes_host_backend_flags(self):
         args=SimpleNamespace(project_dir=Path('.'),command='bot')
-        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'systemd'}), patch('pathlib.Path.read_text', return_value='{"services":{"account":{"init":true}}}'), patch('subprocess.run',return_value=SimpleNamespace(returncode=0)) as run:
+        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'host'}), patch('pathlib.Path.read_text', return_value='{"services":{"account":{"init":true}}}'), patch('subprocess.run',return_value=SimpleNamespace(returncode=0)) as run:
             self.assertEqual(execute(args,['--backend','compose','--project-dir','.','bot','apply']),0)
             self.assertEqual(run.call_args.args[0][-3:],['wxbridge','bot','apply'])
 
     def test_stopped_status_is_one_json_document(self):
         args=SimpleNamespace(project_dir=Path('.'),command='status',json=True)
-        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'systemd'}), \
+        with patch.dict(os.environ, {'WXBRIDGE_RUNTIME':'host'}), \
              patch('pathlib.Path.read_text', return_value='{"services":{"account":{"init":true}}}'), \
              patch('subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='[{"State":"exited"}]')), \
              patch('sys.stdout',new_callable=io.StringIO) as output:

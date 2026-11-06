@@ -11,7 +11,6 @@ import select
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'src'))
-from wxbridge.host.layout import container
 RUN = Path(os.environ.get('WX_RUNTIME_DIR', '/run/wxbridge-trial'))
 
 
@@ -61,7 +60,7 @@ def close_desktop(handles):
 
 def main():
     subprocess.run(['/usr/bin/bash', str(ROOT/'scripts/start-headless.sh')], check=True)
-    handles = desktop_handles() if container() else []
+    handles = desktop_handles()
     pid = int((RUN/'wechat.pid').read_text())
     expected = Path('/opt/wechat/wechat').resolve()
     started = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]

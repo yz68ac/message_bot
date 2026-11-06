@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from wxbridge.host.system import Paths, UNIT, as_user, need_root, private_json
+from wxbridge.host.system import Paths, as_user, need_root, private_json
 from wxbridge.control import request as control_request
 from wxbridge.host.settings import WEB_CONFIG, WEB_PASSWORD, read_web, write_web, web_document
 from wxbridge.management.locking import FileLock
@@ -18,9 +18,10 @@ def parser():
     p = argparse.ArgumentParser(prog='wxbridge', description='微信机器人主机管理；顶层启停整个服务，bot/web 控制单个组件。')
     from wxbridge import __version__
     p.add_argument('--version', action='version', version=__version__)
-    p.add_argument('--backend', choices=('systemd', 'compose'), default='systemd')
+    p.add_argument('--backend', choices=('local', 'compose'), default='local',
+                   help='local：在账号容器内执行；compose：在宿主机通过 docker compose 转发')
     p.add_argument('--project-dir', type=Path)
-    p.add_argument('--root', type=Path, help='账号配置与 instance 所在目录；默认 /opt/wxbridge')
+    p.add_argument('--root', type=Path, help='账号配置与 instance 所在目录；默认 /var/lib/wxbridge-config')
     commands = p.add_subparsers(dest='command', required=True)
     init = commands.add_parser('container-init', help='创建独立容器项目')
     init.add_argument('--image', required=True)
@@ -28,8 +29,9 @@ def parser():
     status = commands.add_parser('status', help='查看服务、登录和各实例的安全状态')
     status.add_argument('--json', action='store_true')
     for name in ('start','stop','restart','enable','disable'):
-        commands.add_parser(name, help={'start':'启动整个服务，恢复保存的组件开关','stop':'停止整个服务，包括微信和 Web',
-            'restart':'重启整个服务，包括微信和 Web','enable':'开启整体服务的开机启动','disable':'关闭整体服务的开机启动'}[name])
+        commands.add_parser(name, help={'start':'启动账号容器（仅 --backend compose）','stop':'停止账号容器，包括微信和 Web（仅 --backend compose）',
+            'restart':'重启账号容器（仅 --backend compose）','enable':'容器自启动由 compose 的 restart 策略控制',
+            'disable':'容器自启动由 compose 的 restart 策略控制'}[name])
     bot = commands.add_parser('bot', help='单独控制机器人，保留微信和 Web')
     bot_commands = bot.add_subparsers(dest='action', required=True)
     for name, help_text in (('start','启动/恢复机器人'), ('stop','暂停机器人，保留微信和管理台'),
@@ -58,7 +60,6 @@ def parser():
     reset.add_argument('--timeout', type=int, choices=range(1,601), default=30)
     login = commands.add_parser('login', help='在 SSH 终端查看二维码；Ctrl+C 只退出查看')
     login.add_argument('--status', action='store_true')
-    login.add_argument('--vnc', action='store_true', help='临时 VNC，仅监听本机 5900；需安装时 --with-vnc')
     logs = commands.add_parser('logs', help='查看运行日志')
     logs.add_argument('--component', choices=('bot','wechat','web','sender','service'), default='bot')
     logs.add_argument('--lines', type=int, choices=range(1,1001), default=50, metavar='1..1000')
@@ -78,11 +79,7 @@ def parser():
     return p
 
 
-def system_service(action, *, capture=False):
-    if action != 'status':
-        need_root()
-    return subprocess.run(['systemctl', action, UNIT, *(['--no-pager'] if action == 'status' else [])],
-                          capture_output=capture, text=capture, check=False)
+CONTAINER_ONLY = '整体服务由 Docker Compose 管理；请在宿主机部署目录执行 docker compose {}。'
 
 
 def current_status(paths):
@@ -91,8 +88,7 @@ def current_status(paths):
     except PermissionError:
         raise ValueError('没有主控权限，请使用 sudo wxbridge status。') from None
     except (OSError, ValueError):
-        result = subprocess.run(['systemctl','show',UNIT,'-p','ActiveState','--value'], capture_output=True, text=True)
-        return dict(phase='service_unavailable', service=(result.stdout.strip() or 'not_installed'), instances={})
+        return dict(phase='service_unavailable', instances={})
     live = {}
     try:
         live = private_json(paths.runtime/'account-status.json')
@@ -184,20 +180,7 @@ def bot_action(args, paths):
     try:
         before = control_request('status')
     except (OSError, ValueError):
-        if args.command != 'start':
-            raise ValueError('主机服务未运行。使用 sudo wxbridge start 启动。') from None
-        result = system_service('start')
-        if result.returncode:
-            return result.returncode
-        deadline = time.monotonic()+15
-        while True:
-            try:
-                before = control_request('status')
-                break
-            except (OSError, ValueError):
-                if time.monotonic() >= deadline:
-                    raise ValueError('主控尚未就绪，请运行 wxbridge doctor 或 wxbridge logs --component service。') from None
-                time.sleep(.25)
+        raise ValueError('主控未运行；请运行 wxbridge doctor，并在宿主机用 docker compose logs account 查看原因。') from None
     action = 'apply' if args.command in ('restart','apply') else args.command
     if action == 'apply' and before['components']['bot']['state'] == 'active':
         validate_start(paths)
@@ -331,7 +314,7 @@ def web_action(args, paths):
     try:
         before = control_request('status')['web']
     except (OSError, ValueError):
-        raise ValueError('主机服务未运行，请先运行 sudo wxbridge start。') from None
+        raise ValueError('主控未运行；请在宿主机用 docker compose ps 检查账号容器。') from None
     action = 'web_'+args.action
     result = control_request(action)
     if args.json:print(json.dumps(result, ensure_ascii=False))
@@ -348,11 +331,11 @@ def main(argv=None, *, root=None):
         if hasattr(stream,'reconfigure'):
             stream.reconfigure(encoding='utf-8',errors='replace')
     args = parser().parse_args(argv)
-    from wxbridge.host.layout import container, config_root
+    from wxbridge.host.layout import config_root
     if args.backend == 'compose' or args.command == 'container-init':
         from wxbridge_cli.compose import execute
         return execute(args, argv if argv is not None else sys.argv[1:])
-    paths = Paths(app=(args.root or (config_root() if container() else Path(root or '/opt/wxbridge'))).resolve())
+    paths = Paths(app=(args.root or root or config_root()).resolve())
     try:
         if args.command == 'debug':
             from wxbridge_cli.debug import execute
@@ -366,29 +349,25 @@ def main(argv=None, *, root=None):
         if args.command == 'bot':
             args.command = args.action
             return bot_action(args, paths)
-        if args.command in ('start','stop','restart','enable','disable'):
-            return system_service(args.command).returncode
+        if args.command in ('start','stop','restart'):
+            raise ValueError(CONTAINER_ONLY.format(args.command+' account' if args.command != 'start' else 'up -d'))
+        if args.command in ('enable','disable'):
+            raise ValueError('容器自启动策略请修改 compose.yaml 中 account 服务的 restart。')
         if args.command == 'web':
             return web_action(args, paths)
         if args.command == 'login':
-            if args.vnc:
-                if args.status:
-                    raise ValueError('--vnc 与 --status 不能同时使用。')
-                return as_user(paths,['/usr/bin/bash',str(paths.code/'scripts/login-vnc.sh')]).returncode
             cmd = [str(paths.code/'.venv/bin/python'),str(paths.code/'scripts/wechat-login.py')]
             if args.status:
                 cmd.append('--status')
             return as_user(paths,cmd).returncode
         if args.command == 'logs':
             if args.component == 'service':
-                cmd = ['journalctl','-u',UNIT,'-n',str(args.lines),'--no-pager']
-                if args.follow:cmd.append('-f')
-            else:
-                name = {'bot':'bot-live.log','wechat':'session-supervisor.log','web':'web.log','sender':'sender.log'}[args.component]
-                path = paths.runtime/name
-                if not path.is_file() or path.is_symlink():
-                    raise ValueError('运行日志尚未生成。')
-                cmd = ['tail','-n',str(args.lines),*(['-F'] if args.follow else []),str(path)]
+                raise ValueError(CONTAINER_ONLY.format('logs --tail '+str(args.lines)+(' -f' if args.follow else '')+' account'))
+            name = {'bot':'bot-live.log','wechat':'session-supervisor.log','web':'web.log','sender':'sender.log'}[args.component]
+            path = paths.runtime/name
+            if not path.is_file() or path.is_symlink():
+                raise ValueError('运行日志尚未生成。')
+            cmd = ['tail','-n',str(args.lines),*(['-F'] if args.follow else []),str(path)]
             return subprocess.run(cmd).returncode
         if args.command == 'instance':
             return instance_action(args, paths)
@@ -403,7 +382,7 @@ def main(argv=None, *, root=None):
                 print(('OK   ' if item['ok'] else 'FAIL ')+item['name']+' '+item.get('detail',''))
             return int(any(not item['ok'] for item in result))
         if args.command == 'config':
-            for path in (paths.app/'config.json',(Path('/run/secrets/wxbridge/provider.env') if container() else paths.app/'src/provider/.env'),paths.app/'instance',paths.boot_settings,WEB_CONFIG):
+            for path in (paths.app/'config.json',Path('/run/secrets/wxbridge/provider.env'),paths.app/'instance',paths.boot_settings,WEB_CONFIG):
                 print(path)
             return 0
     except KeyboardInterrupt:

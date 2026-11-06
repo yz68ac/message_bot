@@ -1,4 +1,4 @@
-"""开机准备、只读登录/账号验证、游标检查点；日志仅输出安全状态。"""
+"""开机准备与只读登录/账号验证；容器重建后以最新消息为基线。日志仅输出安全状态。"""
 from __future__ import annotations
 
 import argparse
@@ -12,13 +12,12 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'src'))
-from wxbridge.host.layout import container, config_root, sensitive_root, environment
+from wxbridge.host.layout import config_root, sensitive_root, environment
 APP = config_root()
 CODE = Path('/opt/wxbridge')
 SENSITIVE = sensitive_root()
 RUN = Path('/run/wxbridge-trial')
-PERSIST = Path('/var/lib/wxbridge/recovery')
-SETTINGS = Path('/etc/wxbridge/boot.json') if container() else Path('/etc/wxbridge-boot.json')
+SETTINGS = Path('/etc/wxbridge/boot.json')
 SCANNER = Path('/usr/local/lib/wxbridge-recovery')
 USER = 'wxbridge'
 
@@ -58,8 +57,8 @@ def validate_runtime():
         raise ValueError('runtime_missing_or_symlink')
     sys.path.insert(0, str(SCANNER))
     from wxbridge.storage.memoryfs import is_noswap_tmpfs
-    if not is_noswap_tmpfs(RUN.resolve(), Path('/proc/self/mountinfo').read_text(), require_noswap=not container()):
-        raise ValueError('runtime_not_private_noswap_tmpfs')
+    if not is_noswap_tmpfs(RUN.resolve(), Path('/proc/self/mountinfo').read_text(), require_noswap=False):
+        raise ValueError('runtime_not_private_tmpfs')
     info = RUN.stat()
     if info.st_uid != account.pw_uid or info.st_mode & 0o077:
         raise ValueError('runtime_permissions')
@@ -68,7 +67,7 @@ def validate_runtime():
 def runtime():
     validate_runtime()
     account = owner()
-    for path in ((SENSITIVE/'decrypted',) if container() else (RUN/'decrypted', PERSIST)):
+    for path in (SENSITIVE/'decrypted',):
         if path.is_symlink():
             raise ValueError('recovery_directory_symlink')
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -80,57 +79,7 @@ def runtime():
     safe_status('runtime_ready')
 
 
-def configured_instances(*, include_disabled=False):
-    sys.path.insert(0, str(CODE/'src' if (CODE/'src').is_dir() else CODE))
-    from wxbridge.app.status.paths import configured_instances as groups
-    return groups(APP, RUN, include_disabled=include_disabled)
-
-
-def checkpoint_one(path, output):
-    if not path.exists():
-        return dict(saved=False, reason='queue_not_created')
-    sys.path.insert(0, str(CODE/'src' if (CODE/'src').is_dir() else CODE))
-    from wxbridge.storage.inspection import inspect_queue
-    snapshot = inspect_queue(path)
-    value = dict(schema=1, identity=snapshot.identity, cursor=snapshot.cursor, updated_at=int(time.time()),
-                 pending_at_shutdown=snapshot.pending, memory_pending_at_shutdown=snapshot.memory_total)
-    # The subsequent probe runs as wxbridge, including after a root maintenance checkpoint.
-    account = owner() if getattr(os, 'geteuid', lambda: None)() == 0 else None
-    if output.parent != PERSIST:
-        for directory in (output.parent.parent, output.parent):
-            if directory.is_symlink():
-                raise ValueError('checkpoint_directory_symlink')
-            directory.mkdir(exist_ok=True, mode=0o700)
-            if account:
-                os.chown(directory, account.pw_uid, account.pw_gid)
-    atomic_json(output, value, owner=account)
-    return dict(saved=True, cursor=value['cursor'], pending=snapshot.pending, memory_pending=snapshot.memory_total)
-
-
-def checkpoint():
-    if container():
-        return dict(saved=False, reason='container_ephemeral_cursor')
-    groups = configured_instances(include_disabled=True)
-    results = {}
-    for identifier, cfg, reuse in groups:
-        output = PERSIST/'cursor.json' if reuse else PERSIST/'instances'/identifier/'cursor.json'
-        result = checkpoint_one(Path(cfg.paths.queue_file), output)
-        if identifier is None:
-            return result
-        results[identifier] = result
-    return dict(saved=all(r['saved'] for r in results.values()), instances=results)
-
-
-def restored_state(checkpoint_value, identity, maximum):
-    if checkpoint_value.get('schema') != 1 or checkpoint_value.get('identity') != identity:
-        raise ValueError('checkpoint_account_or_group_mismatch')
-    cursor = checkpoint_value.get('cursor')
-    if type(cursor) is not int or cursor < 0 or cursor > maximum:
-        raise ValueError('checkpoint_cursor_out_of_range')
-    return dict(chats={identity['chat']: dict(last_local_id=cursor)})
-
-
-def probe(keys=None, *, verify=False):
+def probe(keys=None):
     # 只在主监听停止、协调器持有两把锁时运行；整个数据库访问留在此单进程。
     sys.path.insert(0, str(CODE/'src' if (CODE/'src').is_dir() else CODE))
     from wxbridge.config import load_config
@@ -166,19 +115,12 @@ def probe(keys=None, *, verify=False):
                 raise ValueError('wechat_login_or_target_chat_not_visible')
     results = {}
     for identifier, active_cfg, reuse, identity, maximum in states:
-        cursor_file = PERSIST/'cursor.json' if reuse else PERSIST/'instances'/identifier/'cursor.json'
         queue_file = Path(active_cfg.paths.queue_file)
-        if not container() and cursor_file.exists():
-            state = restored_state(json.loads(cursor_file.read_text()), identity, maximum)
-            if not verify and not queue_file.exists():
-                from wxbridge.storage.memoryfs import require_memory_directory
-                require_memory_directory(str(Path(active_cfg.paths.state_file).parent))
-                atomic_json(Path(active_cfg.paths.state_file), state)
         if queue_file.exists():
             from wxbridge.storage.inspection import inspect_queue
             if inspect_queue(queue_file).identity != identity:
                 raise ValueError('existing_queue_identity_mismatch')
-        result = dict(ready=True, checkpoint_restored=not container() and cursor_file.exists(), latest_local_id=maximum)
+        result = dict(ready=True, latest_local_id=maximum)
         if identifier is None:
             return result
         results[identifier] = result
@@ -280,8 +222,6 @@ def prepare(*, verify=False, metadata_only=False):
         if metadata_only:
             return safe_status('contacts_prepared',ready=False,no_api=True,no_message_sent=True)
         args = [str(CODE/'.venv/bin/python'),str(CODE/'scripts/boot-recovery.py'),'probe','--keys',str(destination)]
-        if verify:
-            args += ['--verify']
         result = as_user(args)
         if result.returncode:
             try:
@@ -299,9 +239,8 @@ def prepare(*, verify=False, metadata_only=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['runtime','prepare','directory','verify','probe','checkpoint','status'])
+    parser.add_argument('mode',choices=['runtime','prepare','directory','verify','probe','status'])
     parser.add_argument('--keys',type=Path)
-    parser.add_argument('--verify',action='store_true')
     args = parser.parse_args()
     try:
         if args.mode == 'runtime':
@@ -309,9 +248,7 @@ def main():
         elif args.mode in ('prepare','directory','verify'):
             prepare(verify=args.mode=='verify',metadata_only=args.mode=='directory')
         elif args.mode == 'probe':
-            print(json.dumps(probe(args.keys,verify=args.verify)))
-        elif args.mode == 'checkpoint':
-            print(json.dumps(checkpoint()))
+            print(json.dumps(probe(args.keys)))
         else:
             print((RUN/'boot-status.json').read_text() if (RUN/'boot-status.json').exists() else '{"phase":"not_started"}')
     except Exception as exc:

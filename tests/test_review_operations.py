@@ -3,7 +3,6 @@ from tests.support.configuration import replace_config, update_config, snapshot
 from tests.support.model_support import default_config
 from contextlib import nullcontext
 import copy
-import importlib.util
 import json
 from pathlib import Path
 import tempfile
@@ -18,8 +17,6 @@ from adapter_wc.native import helper
 import tests.support.boot as recovery_tests
 from tests.support.synthetic import NOW, msg
 
-spec=importlib.util.spec_from_file_location('deploy_release',Path(__file__).parent.parent/'scripts/deploy-release.py')
-deployment=importlib.util.module_from_spec(spec);spec.loader.exec_module(deployment)
 
 
 class ReviewOperationTests(unittest.TestCase):
@@ -33,7 +30,7 @@ class ReviewOperationTests(unittest.TestCase):
             cfg = replace_config(cfg, 'paths.state_file', str(root/'state.json'))
             active=copy.deepcopy(cfg)
             cfg = replace_config(cfg, 'instances', [dict(id='synthetic',enabled=True,config=active)])
-            with patch.object(recovery_tests.boot,'RUN',root),patch.object(recovery_tests.boot,'PERSIST',root/'saved'),\
+            with patch.object(recovery_tests.boot,'RUN',root),\
                  patch('wxbridge.config.load_config',return_value=cfg),patch('wxbridge.wechat.store.WeChatStore',return_value=store),\
                  patch('wxbridge.wechat.ui.A11y') as gui,patch('wxbridge.native.sender.readiness',return_value={'ready':True}) as ready:
                 self.assertTrue(recovery_tests.boot.probe()['ready'])
@@ -63,29 +60,3 @@ class ReviewOperationTests(unittest.TestCase):
         entry=dict(summary='上周聊过Warframe',kind='event')
         self.assertGreater(MemoryTopic('今天讨论星际战甲',aliases=aliases).score(entry),0)
         self.assertEqual(MemoryTopic('今天讨论JOJO',aliases=aliases).score(entry),0)
-
-    def test_release_plan_preserves_prompts_and_rejects_private_or_removed_paths(self):
-        info=dict(sha256='a'*64,mode='100644')
-        old=dict(files={'prompts/system.md':info,'wxbridge/config.py':info})
-        incoming=dict(files={**old['files'],'prompts/system.md':dict(info,sha256='b'*64),
-                             'prompts/topic_aliases.json':info,'wxbridge/config.py':dict(info,sha256='b'*64)})
-        self.assertEqual(deployment.changes(old,incoming),['prompts/topic_aliases.json','wxbridge/config.py'])
-        for invalid in ('../outside','.env','config.json','memory/private.json'):
-            with self.subTest(path=invalid),self.assertRaises(ValueError):
-                deployment.changes(old,dict(files={**incoming['files'],invalid:info}))
-        with self.assertRaises(ValueError):deployment.changes(old,dict(files={}))
-
-    def test_release_removals_need_an_exact_list_and_prompt_updates_are_explicit(self):
-        info=dict(sha256='a'*64,mode='100644')
-        old=dict(files={'scripts/old.py':info,'prompts/system.md':info})
-        incoming=dict(files={'scripts/diagnostics/old.py':info,
-                             'prompts/system.md':dict(info,sha256='b'*64)})
-        for allow in ((),('scripts/other.py',),('scripts/old.py','extra.py')):
-            with self.subTest(allow=allow),self.assertRaises(ValueError):
-                deployment.changes(old,incoming,allow_removed=allow)
-        self.assertEqual(deployment.changes(old,incoming,allow_removed=['scripts/old.py']),
-                         ['scripts/diagnostics/old.py'])
-        self.assertEqual(deployment.changes(old,incoming,allow_removed=['scripts/old.py'],update_prompts=True),
-                         ['prompts/system.md','scripts/diagnostics/old.py'])
-        with self.assertRaises(ValueError):
-            deployment.changes(old,dict(files={}),allow_removed=list(old['files']),update_prompts=True)

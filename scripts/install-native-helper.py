@@ -27,13 +27,11 @@ WHEEL_SHA256='2ba706b7385d56111af5c6cced55361168d3d93babdb300d2ea2b7f76d58a289'
 TARGET=Path('/opt/wxbridge-native-helper')
 SHORTCUT=Path('/usr/local/bin/ds-native')
 # Asset names and the image runtime directory come from the pinned adapter wheel's deployment contract.
-ADAPTER=runpy.run_path(str(Path(__file__).with_name('upgrade-installation.py')))['adapter_deployment'](
+ADAPTER=runpy.run_path(str(Path(__file__).with_name('adapter-wheel.py')))['adapter_deployment'](
     Path(__file__).resolve().parents[1])
 TEXT_ASSETS=tuple(ADAPTER['helper_assets'])
 IMAGE_ASSETS=tuple(ADAPTER['image_assets'])
 IMAGE_RUNTIME_DIRECTORY=PurePosixPath(ADAPTER['image_runtime_directory'])
-IMAGE_RUNTIME_POLICY=(f'RuntimeDirectory={IMAGE_RUNTIME_DIRECTORY.name}\nRuntimeDirectoryMode=0700\n'
-                      f'RuntimeDirectoryPreserve=yes\nReadWritePaths={IMAGE_RUNTIME_DIRECTORY}\n')
 
 
 def image_options(enabled, account, root, uid):

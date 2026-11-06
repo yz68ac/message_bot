@@ -43,7 +43,7 @@ def import_release(wheel, repository, *, root=ROOT):
         origin = repository.name
     manifest = dict(name='adapter_wc', version=version, wheel=filename, sha256=sha256,
                     source=dict(repository=origin, commit=commit, tag=tag))
-    verify = runpy.run_path(str(root/'scripts/upgrade-installation.py'))['adapter_wheel']
+    verify = runpy.run_path(str(root/'scripts/adapter-wheel.py'))['adapter_wheel']
     temporary = root/'.test-tmp'
     temporary.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='adapter-import-', dir=temporary) as directory:

@@ -7,27 +7,18 @@ import stat
 import subprocess
 import tempfile
 
-UNIT = 'wxbridge.service'
 USER = 'wxbridge'
 
 
 @dataclass(frozen=True)
 class Paths:
-    app: Path = Path('/opt/wxbridge')
+    app: Path = Path('/var/lib/wxbridge-config')
     runtime: Path = Path('/run/wxbridge-trial')
     home: Path = Path('/var/lib/wxbridge')
     helper: Path = Path('/opt/wxbridge-native-helper')
-    settings: Path = Path('/etc/wxbridge-boot.json')
-
-    @property
-    def boot_settings(self):
-        from .layout import container
-        return Path('/etc/wxbridge/boot.json') if container() else self.settings
-
-    @property
-    def code(self):
-        from .layout import container, code_root
-        return code_root() if container() else self.app
+    boot_settings: Path = Path('/etc/wxbridge/boot.json')
+    helper_config: Path = Path('/etc/wxbridge/helper-config.json')
+    code: Path = Path('/opt/wxbridge')
 
 
 def service_account():

@@ -104,14 +104,12 @@ class Child:
 
 
 class Supervisor:
-    container = False
     forced_shutdown = False
     def __init__(self, root, *, web_config=WEB_CONFIG,
                  control_path=DEFAULT_SOCKET, state_dir='/var/lib/wxbridge-service', run_dir='/run/wxbridge-trial'):
         import pwd
-        from .layout import container, code_root
-        self.container = container()
-        self.code = code_root() if self.container else Path(root)
+        from .layout import code_root
+        self.code = code_root()
         self.root, self.run_dir = Path(root), Path(run_dir)
         self.helper_stop_started = None
         self.wechat_stop_started = None
@@ -151,7 +149,7 @@ class Supervisor:
         self.web_ready, self.web_next_probe = False, 0
         self.web_health_token = ''
         self.web_launch_settings = None
-        self.stopping, self.ready, self.checkpoint_needed = False, False, False
+        self.stopping, self.ready = False, False
         self.phase, self.error, self.next_prepare = 'starting', '', 0
         python = str(self.code/'.venv/bin/python')
         identity = dict(uid=self.account.pw_uid, gid=self.account.pw_gid,
@@ -159,14 +157,13 @@ class Supervisor:
         helper = Path('/opt/wxbridge-native-helper')
         self.children = {
             SESSION: Child(SESSION, ['/usr/bin/python3', str(self.code/'scripts/boot-session.py')], **identity),
-            HELPER: Child(HELPER, [str(helper/'venv/bin/python'), '-I', str(helper/'helper.py'), '--serve', str(Path('/etc/wxbridge/helper-config.json') if self.container else helper/'helper-config.json')], cwd=str(helper), timeout=None),
+            HELPER: Child(HELPER, [str(helper/'venv/bin/python'), '-I', str(helper/'helper.py'), '--serve', '/etc/wxbridge/helper-config.json'], cwd=str(helper), timeout=None),
             BOT: Child(BOT, [python, '-m', 'wxbridge.app.runtime', '--config', str(self.root/'config.json')], timeout=330, **identity),
             WEB: Child(WEB, [python, '-m', 'web.backend', '--root', str(self.root),
                 '--host', DEFAULT_WEB.host, '--port', str(DEFAULT_WEB.port), '--password-file', str(WEB_PASSWORD),
                 '--allow-service-control', '--control-socket', str(self.control_path),
                 '--catalog-file', '/var/lib/wxbridge-web/models.json'], **identity),
             RECOVERY: Child(RECOVERY, [python, str(self.code/'scripts/boot-recovery.py'), 'prepare'], cwd=str(self.root), timeout=15),
-            'checkpoint': Child('checkpoint', [python, str(self.code/'scripts/boot-recovery.py'), 'checkpoint'], cwd=str(self.root), timeout=15),
         }
         self.socket, self.logs, self.lock_fd = None, {}, None
         self.log_threads = []
@@ -177,10 +174,8 @@ class Supervisor:
     def environment(self, *, gui=False):
         from .layout import environment
         env = dict(**environment(), PATH='/usr/local/bin:/usr/bin:/bin', HOME=self.account.pw_dir,
-                   WX_RUNTIME_DIR=str(self.run_dir), LANG='C.UTF-8')
-        if self.container:
-            env['PYTHONPATH'] = str(self.code/'src')
-            env['WXBRIDGE_WEB_HOSTS'] = os.environ.get('WXBRIDGE_WEB_HOSTS', '')
+                   WX_RUNTIME_DIR=str(self.run_dir), LANG='C.UTF-8',
+                   PYTHONPATH=str(self.code/'src'), WXBRIDGE_WEB_HOSTS=os.environ.get('WXBRIDGE_WEB_HOSTS', ''))
         if gui and (self.run_dir/'env').is_file():
             for line in (self.run_dir/'env').read_text().splitlines():
                 key, sep, value = line.partition('=')
@@ -194,27 +189,25 @@ class Supervisor:
             path = self.run_dir / filename
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
             os.fchown(fd, self.account.pw_uid, self.account.pw_gid)
-            if self.container:
-                reader, writer = os.pipe()
-                def relay(source=reader, destination=fd):
-                    try:
-                        while True:
-                            chunk = os.read(source, 65536)
-                            if not chunk:
-                                break
-                            if os.fstat(destination).st_size > 8*1024*1024:
-                                os.ftruncate(destination, 0)
-                            os.write(destination, chunk)
-                            os.write(1, chunk)
-                    finally:
-                        os.close(source)
-                        os.close(destination)
-                thread = threading.Thread(target=relay, daemon=True)
-                thread.start()
-                self.log_threads.append(thread)
-                self.logs[name] = os.fdopen(writer, 'wb', buffering=0)
-            else:
-                self.logs[name] = os.fdopen(fd, 'ab', buffering=0)
+            # Each line goes to the bounded runtime log and to container stdout.
+            reader, writer = os.pipe()
+            def relay(source=reader, destination=fd):
+                try:
+                    while True:
+                        chunk = os.read(source, 65536)
+                        if not chunk:
+                            break
+                        if os.fstat(destination).st_size > 8*1024*1024:
+                            os.ftruncate(destination, 0)
+                        os.write(destination, chunk)
+                        os.write(1, chunk)
+                finally:
+                    os.close(source)
+                    os.close(destination)
+            thread = threading.Thread(target=relay, daemon=True)
+            thread.start()
+            self.log_threads.append(thread)
+            self.logs[name] = os.fdopen(writer, 'wb', buffering=0)
         return self.logs[name]
 
     def start(self, name, *, capture=False):
@@ -222,7 +215,7 @@ class Supervisor:
         if child.process is not None or time.monotonic() < child.next_start:
             return False
         try:
-            if self.container and name in (BOT, WEB):
+            if name in (BOT, WEB):
                 from .credentials import validate_provider
                 from wxbridge.config import load_account
                 validate_provider(Path(load_account(self.root/'config.json').provider_env))
@@ -316,7 +309,6 @@ class Supervisor:
         if self.stopping:
             raise ValueError('service_stopping')
         if action in ('account_login','account_bind'):
-            if not self.container:raise ValueError('container_onboarding_only')
             from .onboarding import login_snapshot, bind_configured_account
             return login_snapshot(self.root) if action=='account_login' else bind_configured_account(self)
         if action in WEB_ACTIONS:
@@ -345,8 +337,7 @@ class Supervisor:
         parent = self.control_path.parent
         if parent.is_symlink() or parent.stat().st_uid != 0 or parent.stat().st_mode & 0o022:
             raise ValueError('unsafe_control_directory')
-        # systemd reapplies RuntimeDirectoryMode for each Exec command, so an
-        # ExecStartPre chmod alone cannot make this socket reachable by Web.
+        # The control directory is a tmpfs mount; Web reaches the socket via the service group.
         os.chown(parent, 0, self.account.pw_gid)
         os.chmod(parent, 0o750)
         self.lock_fd = os.open(parent/'supervisor.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -391,7 +382,7 @@ class Supervisor:
             if event is None:
                 continue
             code, data, intentional = event
-            if self.container and self.stopping and name in (BOT, HELPER) and code == -getattr(signal, 'SIGKILL', 9):
+            if self.stopping and name in (BOT, HELPER) and code == -getattr(signal, 'SIGKILL', 9):
                 self.forced_shutdown = True
             if name == SESSION:
                 self.ready = False
@@ -401,15 +392,11 @@ class Supervisor:
                 self.ready = False
                 self.children[BOT].stop(signal.SIGINT)
             elif name == BOT:
-                self.ready, self.checkpoint_needed = False, not self.container
+                self.ready = False
             elif name == WEB:
                 self.web_ready, self.web_effective = False, None
                 if not intentional:
                     self.web_error = 'web_process_exited'
-            elif name == 'checkpoint':
-                self.checkpoint_needed = False
-                if code:
-                    self.error = 'checkpoint_failed'
             elif name == RECOVERY:
                 try:
                     value = json.loads((data or b'').decode())
@@ -433,13 +420,10 @@ class Supervisor:
             recovery = self.children[RECOVERY]
             if self.stopping or recovery.command[-1] != 'directory':
                 recovery.stop()
-        if bot.process is None and self.checkpoint_needed and self.children['checkpoint'].process is None:
-            self.start('checkpoint', capture=True)
         if self.stopping:
-            if bot.process is None and not self.checkpoint_needed and self.children['checkpoint'].process is None:
+            if bot.process is None:
                 self.children[HELPER].stop()
-                if self.container:
-                    self.drain_container_helper()
+                self.drain_container_helper()
                 if self.children[HELPER].process is None:
                     self.children[SESSION].stop()
             return
@@ -459,7 +443,7 @@ class Supervisor:
                 and self.children[RECOVERY].command[-1]=='directory'
                 and self.children[RECOVERY].process is None and time.monotonic() >= self.next_prepare):
             self.start(RECOVERY, capture=True)
-        if self.enabled and desktop_ready and self.children[HELPER].running and bot.process is None and not self.checkpoint_needed and self.children['checkpoint'].process is None:
+        if self.enabled and desktop_ready and self.children[HELPER].running and bot.process is None:
             if self.ready:
                 self.start(BOT)
             elif self.children[RECOVERY].process is None and time.monotonic() >= self.next_prepare:
@@ -482,23 +466,19 @@ class Supervisor:
                         self.children[WEB].stop()
                     if all(child.process is None for child in self.children.values()):
                         # D-Bus and desktop portals can daemonize outside their
-                        # parent's process group. Drain this unit's remaining
+                        # parent's process group. Drain the container's remaining
                         # processes only after the sender has finished safely.
-                        remaining = self.container_processes() if self.container else self.remaining_processes()
+                        from .processes import remaining_processes, signal_pid
+                        remaining = remaining_processes()
                         if not remaining:
                             break
                         if orphan_deadline is None:
                             orphan_deadline = time.monotonic()+5
                         sig = signal.SIGTERM if time.monotonic()<orphan_deadline else signal.SIGKILL
-                        if self.container and sig == signal.SIGKILL:
+                        if sig == signal.SIGKILL:
                             self.forced_shutdown = True
                         for pid in remaining:
-                            if self.container:
-                                from .processes import signal_pid
-                                signal_pid(pid, sig)
-                            else:
-                                try:os.kill(pid,sig)
-                                except ProcessLookupError:pass
+                            signal_pid(pid, sig)
                 time.sleep(0.25)
         finally:
             for child in self.children.values():
@@ -535,17 +515,3 @@ class Supervisor:
                 signal_pid(pid, sig)
         else:
             child._signal(signal.SIGKILL)
-
-    @staticmethod
-    def container_processes():
-        from .processes import remaining_processes
-        return remaining_processes()
-
-    @staticmethod
-    def remaining_processes():
-        group = next((line.split(':',2)[2].strip() for line in Path('/proc/self/cgroup').read_text().splitlines()
-                      if line.startswith('0::')), '')
-        if not group.endswith('/wxbridge.service') or '..' in Path(group).parts:
-            raise ValueError('supervisor_requires_own_systemd_cgroup')
-        path = Path('/sys/fs/cgroup')/group.lstrip('/')/'cgroup.procs'
-        return [int(pid) for pid in path.read_text().split() if int(pid)!=os.getpid()]

@@ -38,11 +38,10 @@ class ServiceManager:
         try:
             return request(action, self.control_socket)
         except (OSError, ValueError):
-            raise ManagementError('supervisor_unavailable', '主控暂时不可用，请检查 wxbridge.service。', 503) from None
+            raise ManagementError('supervisor_unavailable', '主控暂时不可用，请在宿主机用 docker compose logs account 查看。', 503) from None
 
     def onboarding(self, action):
-        from wxbridge.host.layout import container
-        if not container() or not self.allow_control or action not in ('login','bind'):
+        if not self.allow_control or action not in ('login','bind'):
             raise ManagementError('onboarding_disabled','当前环境未开放账号引导。',403)
         try:
             return request('account_'+action,self.control_socket)

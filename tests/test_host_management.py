@@ -1,15 +1,13 @@
-"""Fresh-host plans and CLI lifecycle semantics; no apt, native sends or model calls."""
+"""CLI lifecycle semantics inside the account container; no native sends or model calls."""
 from wxbridge.host.settings import WebConfig
 from contextlib import redirect_stdout, redirect_stderr
-import hashlib
 import io
 import json
 from pathlib import Path
-import runpy
 from types import SimpleNamespace
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from wxbridge_cli import cli, install
 from wxbridge.host import binding as setup
@@ -31,29 +29,23 @@ class HostCLITests(unittest.TestCase):
 
     def test_stop_uses_the_supervisor_and_waits_without_stopping_wechat(self):
         values = [status(), dict(applied=True,message='stopping'), status(enabled=False,pid=0,state='inactive')]
-        with patch.object(cli,'control_request',side_effect=values) as request, patch.object(cli,'system_service') as system:
+        with patch.object(cli,'control_request',side_effect=values) as request, patch.object(cli.subprocess,'run') as run:
             self.assertEqual(self.call(['bot','stop','--wait']),0)
         self.assertEqual([c.args[0] for c in request.call_args_list],['status','stop','status'])
-        system.assert_not_called()
+        run.assert_not_called()
 
     def test_restart_keeps_a_paused_bot_paused(self):
         values = [status(enabled=False,pid=0,state='inactive'), dict(applied=False,message='paused')]
-        with patch.object(cli,'control_request',side_effect=values) as request, patch.object(cli,'system_service') as system:
+        with patch.object(cli,'control_request',side_effect=values) as request:
             self.assertEqual(self.call(['bot','restart','--wait']),0)
         self.assertEqual([c.args[0] for c in request.call_args_list],['status','apply'])
-        system.assert_not_called()
 
-    def test_start_bootstraps_only_the_fixed_service_when_socket_is_absent(self):
-        values = [FileNotFoundError(),status(enabled=False,pid=0,state='inactive'),dict(applied=True,message='starting')]
-        with patch.object(cli,'control_request',side_effect=values), patch.object(cli,'system_service',return_value=SimpleNamespace(returncode=0)) as service:
-            self.assertEqual(self.call(['bot','start']),0)
-        service.assert_called_once_with('start')
-
-    def test_whole_service_operations_are_explicit_and_fixed(self):
-        with patch.object(cli,'need_root') as root, patch.object(cli.subprocess,'run',return_value=SimpleNamespace(returncode=0)) as run:
-            self.assertEqual(cli.system_service('stop').returncode,0)
-        root.assert_called_once()
-        self.assertEqual(run.call_args.args[0],['systemctl','stop','wxbridge.service'])
+    def test_start_without_a_supervisor_reports_instead_of_starting_services(self):
+        with patch.object(cli,'validate_start'), patch.object(cli,'control_request',side_effect=FileNotFoundError()), \
+                patch.object(cli.subprocess,'run') as run, redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(cli.main(['bot','start']),1)
+        run.assert_not_called()
+        self.assertIn('docker compose',error.getvalue())
 
     def test_instance_control_drops_to_the_service_account(self):
         args = cli.parser().parse_args(['instance','stop','alpha'])
@@ -81,12 +73,19 @@ class HostCLITests(unittest.TestCase):
         with patch.object(Path,'read_text',return_value='123'), patch.object(cli,'private_json',return_value=dict(process={'pid':123},phase='qr_required')):
             self.assertEqual(cli.login_snapshot(Paths())['phase'],'qr_required')
 
-    def test_top_level_commands_only_control_the_whole_service(self):
+    def test_whole_service_commands_point_to_compose_inside_the_container(self):
         for action in ('start','stop','restart','enable','disable'):
-            with self.subTest(action=action), patch.object(cli,'system_service',return_value=SimpleNamespace(returncode=0)) as system, \
-                    patch.object(cli,'control_request') as control:
-                self.assertEqual(self.call([action]),0)
-                system.assert_called_once_with(action);control.assert_not_called()
+            with self.subTest(action=action), patch.object(cli.subprocess,'run') as run, \
+                    patch.object(cli,'control_request') as control, redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(cli.main([action]),1)
+                run.assert_not_called();control.assert_not_called()
+                self.assertIn('compose',error.getvalue())
+
+    def test_service_logs_point_to_compose_logs(self):
+        with patch.object(cli.subprocess,'run') as run, redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(cli.main(['logs','--component','service','--lines','20']),1)
+        run.assert_not_called()
+        self.assertIn('docker compose logs --tail 20 account',error.getvalue())
 
     def test_removed_commands_are_not_silent_aliases(self):
         for command in ('service','apply'):
@@ -94,9 +93,9 @@ class HostCLITests(unittest.TestCase):
 
     def test_web_control_never_bootstraps_the_whole_service(self):
         with patch.object(cli,'need_root'),patch.object(cli,'control_request',side_effect=FileNotFoundError()), \
-                patch.object(cli,'system_service') as system:
+                patch.object(cli.subprocess,'run') as run:
             self.assertEqual(self.call(['web','start']),1)
-        system.assert_not_called()
+        run.assert_not_called()
 
     def test_web_restart_waits_for_new_ready_pid_and_generation(self):
         before=dict(enabled=True,pid=10,state='active')
@@ -147,10 +146,12 @@ class HostCLITests(unittest.TestCase):
 
 
 class WebSettingsTests(unittest.TestCase):
-    def test_settings_reject_public_wildcard_and_invalid_types(self):
+    def test_settings_reject_public_addresses_and_invalid_types(self):
         from wxbridge.host.settings import validate_web
-        for host in ('0.0.0.0','::','8.8.8.8','example.com',None,True):
+        for host in ('::','8.8.8.8','example.com',None,True):
             with self.subTest(host=host),self.assertRaises(ValueError):validate_web(dict(host=host,port=8730))
+        # Host networking: the wildcard is accepted, other public addresses are not.
+        self.assertEqual(validate_web(dict(host='0.0.0.0',port=8730)).host,'0.0.0.0')
         for port in (0,65536,True,'8730'):
             with self.subTest(port=port),self.assertRaises(ValueError):validate_web(dict(host='127.0.0.1',port=port))
         self.assertEqual(validate_web(dict(host='localhost',port=8730)),WebConfig())
@@ -187,11 +188,11 @@ class WebSettingsTests(unittest.TestCase):
             with patch.object(cli,'WEB_CONFIG',settings),patch.object(cli,'WEB_PASSWORD',password), \
                     patch.object(cli,'need_root'),patch.object(install,'password_input',return_value='synthetic-password'), \
                     patch.object(system,'service_account',return_value=account),patch.object(system,'atomic_file') as write, \
-                    patch.object(cli,'reload_web') as reload,patch.object(cli,'system_service') as service, \
+                    patch.object(cli,'reload_web') as reload,patch.object(cli.subprocess,'run') as run, \
                     redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cli.main(['web','password','reset']),0)
             write.assert_called_once_with(password,b'synthetic-password\n',uid=912,gid=913)
-            reload.assert_called_once_with(30);service.assert_not_called()
+            reload.assert_called_once_with(30);run.assert_not_called()
             self.assertNotIn('synthetic-password',output.getvalue())
 
     def test_password_is_never_accepted_as_a_command_argument(self):
@@ -218,116 +219,30 @@ class WebSettingsTests(unittest.TestCase):
                     self.assertEqual(settings.web_document(settings.read_web(path)),value)
 
 
-class InstallerTests(unittest.TestCase):
-    def setUp(self):
-        temporary = tempfile.TemporaryDirectory(dir=ROOT/'.test-tmp')
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
-
-    def test_source_copy_excludes_credentials_runtime_and_dependency_trees(self):
-        source = self.root/'source'
-        source.mkdir()
-        (source/'scripts').mkdir()
-        (source/'scripts/check-repository.py').write_bytes((ROOT/'scripts/check-repository.py').read_bytes())
-        names = ['config.json','src/provider/.env','instance/a/config.json','src/web/frontend/node_modules/lib.js',
-                 'src/provider/build/old.py','src/provider/__pycache__/old.pyc','src/provider/models.json',
-                 'src/web/frontend/dist/index.html','src/provider/client.py','.env.example']
-        for name in names:
-            path=source/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('synthetic')
-        values={p.as_posix() for p in install.public_files(source)}
-        self.assertIn('src/web/frontend/dist/index.html',values)
-        self.assertIn('src/provider/client.py',values)
-        self.assertIn('.env.example',values)
-        self.assertEqual(values.intersection(names),{'src/web/frontend/dist/index.html','src/provider/client.py','.env.example'})
-
-    def test_template_never_restores_api_credentials(self):
-        raw=b'GEMINI_API_KEY=PRIVATE\nGEMINI_BASE_URL=http://127.0.0.1:8317/v1\nOPENAI_API_KEY=PRIVATE\n'
-        result=install.credential_free_template(raw)
-        self.assertNotIn(b'PRIVATE',result)
-        self.assertIn(b'GEMINI_BASE_URL=http://127.0.0.1:8317/v1',result)
-
-    def test_unit_rendering_uses_new_machine_identity_and_specific_lan_address(self):
-        account=SimpleNamespace(pw_uid=912,pw_gid=913)
-        mount,service=install.render_units(ROOT,account,'192.168.8.20')
-        self.assertIn('uid=912,gid=913,noswap',mount)
-        self.assertNotIn('@UID@',mount)
-        self.assertIn('-m wxbridge --root /opt/wxbridge',service)
-        self.assertNotIn('--web-host',service)
-        self.assertIn('TimeoutStopSec=infinity',service)
-        self.assertIn('SendSIGKILL=no',service)
-
-    def test_new_installation_is_paused_and_has_no_bound_database_or_models(self):
-        document=install.initial_config(Paths())
-        from wxbridge.config import default_document
-        from wxbridge.config.codec import account_from_document
-        from wxbridge.config_merge import deep_merge
-        cfg=account_from_document(deep_merge(default_document(),document))
-        self.assertEqual(cfg.db_dir,'')
-        self.assertEqual(cfg.helper_transport.allowed_chat_ids,('filehelper',))
-        self.assertNotIn('models',document)
-        self.assertNotIn('instances',document)
-        self.assertEqual(Path(cfg.memory_directory),Paths().home/'memory')
-
-    def test_existing_installation_is_rejected_before_any_install_action(self):
-        args=SimpleNamespace(web_host='127.0.0.1',dry_run=False)
-        run=Mock()
-        with patch.object(install,'validate_host'), patch.object(install,'existing_targets',return_value=[Path('/opt/wxbridge')]):
-            with self.assertRaisesRegex(ValueError,'拒绝覆盖'):
-                install.install(ROOT,args,run=run)
-        run.assert_not_called()
-
-    def test_dry_run_never_creates_users_mounts_or_prompts_for_password(self):
-        args=SimpleNamespace(web_host='127.0.0.1',wechat_deb=None,frida_wheel=None,with_vnc=False,dry_run=True)
-        run=Mock()
-        with patch.object(install,'validate_host'), patch.object(install,'existing_targets',return_value=[]), \
-             patch.object(install,'verify_media',return_value=({},'fake')), patch.object(install,'public_files',return_value=[]), \
-             patch.object(install,'verify_source',return_value=False), patch.object(install,'password_input') as password, \
-             patch.object(Path,'is_file',return_value=True), redirect_stdout(io.StringIO()):
-            plan=install.install(ROOT,args,run=run)
-        self.assertFalse(plan['initial_bot_enabled'])
-        run.assert_not_called();password.assert_not_called()
-
-    def test_release_manifest_tampering_is_rejected(self):
-        file=self.root/'config.defaults.json';file.write_text('{}')
-        entry={'sha256':hashlib.sha256(file.read_bytes()).hexdigest(),'mode':'100644'}
-        (self.root/'release-manifest.json').write_text(json.dumps(dict(format=1,files={'config.defaults.json':entry})))
-        files=[Path('config.defaults.json'),Path('release-manifest.json')]
-        self.assertTrue(install.verify_source(self.root,files))
-        file.write_text('{"changed":true}')
-        with self.assertRaisesRegex(ValueError,'校验失败'):
-            install.verify_source(self.root,files)
-
-    def test_missing_locked_requirements_fails_before_any_host_changes(self):
-        frontend=self.root/'src/web/frontend/dist/index.html'
-        frontend.parent.mkdir(parents=True)
-        frontend.write_text('synthetic frontend')
-        args=SimpleNamespace(web_host='127.0.0.1',wechat_deb=None,frida_wheel=None,with_vnc=False,dry_run=False)
-        run=Mock()
-        with patch.object(install,'validate_host'), patch.object(install,'existing_targets',return_value=[]), \
-             patch.object(install,'verify_media',return_value=({},'fake')), patch.object(install,'public_files',return_value=[]), \
-             patch.object(install,'verify_source',return_value=False), patch.object(install,'password_input') as password:
-            with self.assertRaisesRegex(ValueError,'requirements.txt'):
-                install.install(self.root,args,run=run)
-        run.assert_not_called()
-        password.assert_not_called()
-
-    def test_release_inventory_keeps_all_committed_metadata_for_future_upgrades(self):
-        (self.root/'scripts').mkdir()
-        (self.root/'scripts/check-repository.py').write_bytes((ROOT/'scripts/check-repository.py').read_bytes())
-        (self.root/'Open-Project.cmd').write_text('synthetic')
-        entries={p.relative_to(self.root).as_posix():{'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'mode':'100644'}
-                 for p in self.root.rglob('*') if p.is_file()}
-        (self.root/'release-manifest.json').write_text(json.dumps(dict(format=1,files=entries)))
-        files=install.public_files(self.root)
-        self.assertIn(Path('Open-Project.cmd'),files)
-        self.assertTrue(install.verify_source(self.root,files))
-
+class InstallHelperTests(unittest.TestCase):
     def test_password_is_not_an_argument_and_requires_a_private_input_file(self):
         with self.assertRaisesRegex(ValueError,'12'):
             install.validate_password('short')
         with patch.object(install.sys.stdin,'isatty',return_value=False):
-            with self.assertRaisesRegex(ValueError,'web-password-file'):
+            with self.assertRaisesRegex(ValueError,'password-file'):
                 install.password_input()
+
+    def test_runtime_health_checks_transitive_requirements_without_unrelated_system_packages(self):
+        import importlib.metadata
+        requires, version = importlib.metadata.requires, importlib.metadata.version
+        visited = set()
+        def requirements(name):
+            visited.add(name)
+            if name == 'synthetic-runtime':
+                return []
+            return [*(requires(name) or []), *(['synthetic-runtime>=2'] if name=='model-provider' else [])]
+        def installed(name):
+            return '1' if name=='synthetic-runtime' else version(name)
+        with patch.object(importlib.metadata,'requires',side_effect=requirements), \
+                patch.object(importlib.metadata,'version',side_effect=installed):
+            failures = install.dependency_health()
+        self.assertIn('synthetic-runtime: incompatible',failures)
+        self.assertNotIn('apt-listchanges',visited)
 
 
 class BindingTests(unittest.TestCase):
@@ -341,7 +256,7 @@ class BindingTests(unittest.TestCase):
             with self.subTest(rollback=fail):
                 started,done=Event(),Event();errors=[];threads=[];blocked=[]
                 target=self.paths.app/'config.json'
-                helper=self.paths.helper/'helper-config.json'
+                helper=self.paths.helper_config
                 def save():
                     started.set()
                     try:
@@ -370,11 +285,12 @@ class BindingTests(unittest.TestCase):
         temporary=tempfile.TemporaryDirectory(dir=ROOT/'.test-tmp')
         self.addCleanup(temporary.cleanup)
         root=Path(temporary.name)
-        self.paths=Paths(app=root/'app',runtime=root/'run',home=root/'home',helper=root/'helper',settings=root/'boot.json')
+        self.paths=Paths(app=root/'app',runtime=root/'run',home=root/'home',helper=root/'helper',
+                       boot_settings=root/'boot.json',helper_config=root/'helper/helper-config.json',code=root/'app')
         for path in (self.paths.app,self.paths.home,self.paths.helper):path.mkdir()
         self.config={'db_dir':'old','native_api':{'allowed_chat_ids':['filehelper']}}
         self.helper={'uid':123,'allowed_chat_ids':['filehelper']}
-        for path,value in ((self.paths.app/'config.json',self.config),(self.paths.helper/'helper-config.json',self.helper),(self.paths.settings,{'db_dir':'old'})):
+        for path,value in ((self.paths.app/'config.json',self.config),(self.paths.helper_config,self.helper),(self.paths.boot_settings,{'db_dir':'old'})):
             path.write_text(json.dumps(value))
         self.account=SimpleNamespace(pw_uid=123,pw_gid=124,pw_dir=str(self.paths.home))
 
@@ -414,7 +330,7 @@ class BindingTests(unittest.TestCase):
         child.assert_not_called()
 
     def test_failed_instance_creation_restores_all_binding_and_allowlist_files(self):
-        paths=[self.paths.app/'config.json',self.paths.helper/'helper-config.json',self.paths.settings]
+        paths=[self.paths.app/'config.json',self.paths.helper_config,self.paths.boot_settings]
         before={p:p.read_bytes() for p in paths}
         with self.binding_patches(), patch.object(setup,'create_bound_instance',side_effect=ValueError('synthetic_failure')):
             with self.assertRaisesRegex(ValueError,'回退'):

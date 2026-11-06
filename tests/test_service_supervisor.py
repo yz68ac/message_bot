@@ -23,8 +23,9 @@ class ServiceEntryTests(unittest.TestCase):
                 patch.object(entry.subprocess,'run') as run, \
                 patch('wxbridge.host.supervisor.Supervisor') as supervisor, \
                 patch.object(entry.signal,'signal'):
-            self.assertEqual(entry.main(['--root',str(Path.cwd())]),0)
-        run.assert_called_once_with(['/usr/bin/python3',str(Path.cwd()/'scripts/boot-recovery.py'),'runtime'],check=True)
+            self.assertEqual(entry.main([]),0)
+        run.assert_called_once_with(['/usr/bin/python3',str(Path('/opt/wxbridge/scripts/boot-recovery.py')),'runtime'],check=True)
+        supervisor.assert_called_once_with(Path('/var/lib/wxbridge-config'))
         supervisor.return_value.run.assert_called_once()
 
     @unittest.skipUnless(sys.platform=='linux','Linux system Python recovery process')
@@ -54,7 +55,9 @@ module.Supervisor=Supervisor
 sys.modules['wxbridge.host.supervisor']=module
 entry.os.geteuid=lambda:0
 entry.signal.signal=lambda *args:None
-entry.main(['--root',sys.argv[2]])
+import pathlib,wxbridge.host.layout as layout
+layout.code_root=lambda:pathlib.Path(sys.argv[2])
+entry.main([])
 '''
             result=subprocess.run([sys.executable,'-I','-c',code,str(root/'src'),str(target)],
                                   capture_output=True,text=True,timeout=10)
@@ -101,9 +104,10 @@ class SupervisorTests(unittest.TestCase):
         self.web_reader=patch('wxbridge.host.supervisor.read_web',return_value=s.web_saved)
         self.web_reader.start();self.addCleanup(self.web_reader.stop)
         s.run_dir=self.directory
-        s.enabled,s.stopping,s.ready,s.checkpoint_needed=True,False,False,False
+        s.enabled,s.stopping,s.ready=True,False,False
+        s.helper_stop_started=s.wechat_stop_started=None
         s.phase,s.error,s.next_prepare='starting','',0
-        s.children={n:FakeChild(n) for n in (*COMPONENTS,'checkpoint')}
+        s.children={n:FakeChild(n) for n in COMPONENTS}
         self.started=[]
         def start(name,**kwargs):
             child=s.children[name]
@@ -112,7 +116,7 @@ class SupervisorTests(unittest.TestCase):
         s.start=start
 
     @unittest.skipUnless(sys.platform=='linux','Linux Unix socket and filesystem modes')
-    def test_bind_restores_group_access_after_systemd_reapplies_private_mode(self):
+    def test_bind_restores_group_access_to_a_private_control_directory(self):
         s=self.supervisor;s.control_path=self.directory/'control.sock'
         s.account=SimpleNamespace(pw_gid=os.getgid())
         s.socket=None;s.lock_fd=None
@@ -185,17 +189,14 @@ class SupervisorTests(unittest.TestCase):
         self.assertFalse(s.action('apply')['applied'])
         self.assertFalse(s.enabled);self.assertFalse(s.state_file.exists())
 
-    def test_bot_exit_checkpoints_before_recovery_or_restart(self):
+    def test_bot_exit_prepares_again_before_restart(self):
         self.desktop();s=self.supervisor
         s.children[BOT].event=(0,None,False)
         s.tick()
-        self.assertEqual(self.started,['checkpoint'])
-        s.children['checkpoint'].event=(0,b'{}',False)
-        s.tick()
-        self.assertEqual(self.started,['checkpoint',RECOVERY])
+        self.assertEqual(self.started,[RECOVERY])
         s.children[RECOVERY].event=(0,b'{"ready":true}',False)
         s.tick()
-        self.assertEqual(self.started,['checkpoint',RECOVERY,BOT])
+        self.assertEqual(self.started,[RECOVERY,BOT])
 
     def test_failed_preparation_waits_and_leaves_web_usable(self):
         self.desktop();s=self.supervisor
@@ -214,12 +215,10 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn(SESSION,self.started)
         self.assertFalse(s.children[WEB].stopping)
 
-    def test_shutdown_waits_for_bot_and_checkpoint_before_desktop(self):
+    def test_shutdown_waits_for_bot_and_helper_before_desktop(self):
         self.desktop();s=self.supervisor;s.children[BOT].process=object();s.stopping=True
-        s.tick();self.assertFalse(s.children[SESSION].stopping)
+        s.tick();self.assertFalse(s.children[SESSION].stopping);self.assertFalse(s.children[HELPER].stopping)
         s.children[BOT].event=(0,None,True);s.tick()
-        self.assertIn('checkpoint',self.started);self.assertFalse(s.children[SESSION].stopping)
-        s.children['checkpoint'].event=(0,b'{}',False);s.tick()
         self.assertTrue(s.children[HELPER].stopping);self.assertFalse(s.children[SESSION].stopping)
         s.children[HELPER].event=(0,None,True);s.tick()
         self.assertTrue(s.children[SESSION].stopping)
@@ -340,14 +339,5 @@ class SupervisorTests(unittest.TestCase):
             stream=Mock();stream.recv.return_value=raw
             with self.assertRaises(ValueError):receive(stream)
         with self.assertRaises(ValueError):request('arbitrary-command')
-
-    def test_desktop_daemon_cleanup_excludes_supervisor_and_other_cgroups(self):
-        with patch('pathlib.Path.read_text',side_effect=['0::/system.slice/wxbridge.service\n','123\n456\n']),\
-             patch('wxbridge.host.supervisor.os.getpid',return_value=123):
-            self.assertEqual(Supervisor.remaining_processes(),[456])
-        with patch('pathlib.Path.read_text',return_value='0::/system.slice/other.service\n'):
-            with self.assertRaisesRegex(ValueError,'own_systemd_cgroup'):
-                Supervisor.remaining_processes()
-
 
 if __name__=='__main__':unittest.main()

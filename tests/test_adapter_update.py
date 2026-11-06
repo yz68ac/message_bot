@@ -23,7 +23,7 @@ class AdapterUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=temporary) as directory:
             base=Path(directory);repo=base/'adapter';app=base/'app'
             repo.mkdir();(app/'scripts').mkdir(parents=True)
-            shutil.copyfile(ROOT/'scripts/upgrade-installation.py',app/'scripts/upgrade-installation.py')
+            shutil.copyfile(ROOT/'scripts/adapter-wheel.py',app/'scripts/adapter-wheel.py')
             (repo/'pyproject.toml').write_text('[project]\nname="adapter_wc"\nversion="'+version+'"\n',encoding='utf-8')
             (app/'pyproject.toml').write_text('[project]\ndependencies=["adapter_wc==0.2.0"]\n'
                 '[tool.uv.sources]\nadapter_wc = { path = "dependencies/adapter_wc-0.2.0-py3-none-any.whl" }\n',encoding='utf-8')

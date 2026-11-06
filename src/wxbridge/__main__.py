@@ -1,21 +1,18 @@
-"""Private system service entry; human-facing control lives in wxbridge CLI."""
+"""Private account-container supervisor entry; human-facing control lives in wxbridge CLI."""
 import argparse
 import logging
 import os
-from pathlib import Path
 import signal
 import subprocess
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='WXBridge service supervisor')
-    parser.add_argument('--root', type=Path, default=Path('/opt/wxbridge'))
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     if not hasattr(os,'geteuid') or os.geteuid() != 0:
         parser.error('The supervisor must run as root; business children drop privileges.')
-    from wxbridge.host.layout import container, config_root, code_root
-    root = config_root() if container() else args.root.resolve()
-    code = code_root() if container() else root
+    from wxbridge.host.layout import config_root, code_root
+    root, code = config_root(), code_root()
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     # Recovery deliberately imports a minimal package projection through SCANNER.
     # Keep those sys.path/sys.modules changes outside the long-lived supervisor.

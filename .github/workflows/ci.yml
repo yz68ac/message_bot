@@ -55,20 +55,14 @@ jobs:
       - name: Whitespace
         run: git diff --check
 
-  app-wheel:
-    name: Installed app / Python ${{ matrix.python }}
+  frontend:
+    name: Web frontend
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    strategy:
-      matrix:
-        python: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: ${{ matrix.python }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
@@ -77,13 +71,9 @@ jobs:
       - name: Frontend dependencies
         working-directory: src/web/frontend
         run: npm ci --no-audit --no-fund
-      - name: Build frontend
+      - name: Frontend tests
+        working-directory: src/web/frontend
+        run: npm test
+      - name: Type check and build
         working-directory: src/web/frontend
         run: npm run build
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: '0.12.24'
-      - name: Build isolated release wheels
-        run: python scripts/build-wheels.py --out dist
-      - name: Check installed CLI and resources outside the source checkout
-        run: python scripts/smoke-app-wheel.py dist/wxbridge-*.whl

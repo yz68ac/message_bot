@@ -7,19 +7,14 @@
 | check-repository.py | 只读检查私密文件、凭据模式与本地文档链接；--history 可检查 Git 历史 |
 | test-offline.py | 按需运行合成数据回归 |
 | update-wechat-adapter.py | 从独立仓库的干净版本标签导入固定 wheel |
-| release.py | 从已提交代码生成发布包（build）、校验清单（verify），或校验后解包为 stage（extract） |
+| adapter-wheel.py | 校验固定的 adapter_wc wheel 并读取其部署清单；供镜像构建与适配库导入使用 |
 | container-image.py | 从干净提交构建并导出容器镜像（export），或在目标主机校验后导入（load） |
-| build-wheels.py | 从源码或 stage 构建应用与 provider wheel，并附带固定的 adapter_wc wheel |
-| deploy-release.py | systemd 安装的源码更新：默认只打印计划，--apply 应用；依赖变化时拒绝 |
-| upgrade-installation.py | systemd 安装的依赖升级：baseline → prepare → apply → resume / rollback |
 | boot-session.py | 启动并监督微信会话，同时持有启动登录子进程 |
 | wechat-login.py | 后台推进一次启动登录；前台通过 SSH TTY 查看二维码，--status 只读检查 |
 | [wxbridge.host.login](../src/wxbridge/host/login.py) | 登录运行策略位于应用包；wechat-login.py 仅作为命令入口 |
-| boot-recovery.py | 登录、密钥、身份与游标核对及监听恢复 |
+| boot-recovery.py | 登录、密钥与身份核对；容器重建后以最新消息为基线 |
 | start-headless.sh / stop-headless.sh | 启停专用 Xvfb 会话 |
-| login-vnc.sh | 临时查看登录界面，配合 SSH 隧道 |
-| install-native-helper.py | 安装隔离 root helper 与版本资产 |
-| systemd/ | 服务与私有内存挂载模板 |
+| install-native-helper.py | 镜像构建时安装隔离 root helper 与版本资产 |
 | diagnostics/ | 显式的真实数据或接口诊断 |
 
 运行中先用 `wxbridge status --json` 或 `wxbridge debug queue-status` 查看安全状态元数据。诊断入口可能读取真实消息、调用 API 或更改状态，执行前查看参数和源码。

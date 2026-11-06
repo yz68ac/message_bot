@@ -86,7 +86,6 @@ class RepositoryTests(unittest.TestCase):
             if str(value)=='/var/lib/wxbridge-web':return models
             return Path(value)
         with patch.dict(sys.modules,{'pwd':SimpleNamespace(getpwnam=lambda name:account)}), \
-             patch('wxbridge.host.layout.container',return_value=False), \
              patch('wxbridge.host.supervisor.Path',side_effect=path), \
              patch('wxbridge.host.supervisor.os.getgrouplist',return_value=[],create=True), \
              patch('wxbridge.host.supervisor.os.chown',create=True), \

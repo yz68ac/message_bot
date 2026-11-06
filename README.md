@@ -2,7 +2,7 @@
 
 wxbridge 是运行在 Linux 微信上的 AI 机器人，支持群聊、私聊、图片理解与生成、引用改图、长期记忆和 Web 管理。
 
-一个微信账号对应一个容器，内部可创建多个独立会话实例。Docker 固定程序和依赖版本，账号登录、配置及长期数据保存在外部目录，方便在其他主机部署和升级。默认直连模型服务，不要求代理或 CPA。容器功能已合并到 `main` 分支，现网尚未迁移。
+一个微信账号对应一个容器，内部可创建多个独立会话实例。Docker 固定程序和依赖版本，账号登录、配置及长期数据保存在外部目录，方便在其他主机部署和升级。默认直连模型服务，不要求代理或 CPA。Docker 是唯一支持的部署方式。
 
 - [功能](#功能)
 - [项目结构](#项目结构)
@@ -22,7 +22,7 @@ wxbridge 是运行在 Linux 微信上的 AI 机器人，支持群聊、私聊、
 - **运行管理**：集成虚拟桌面、扫码登录、恢复和有序停机；Compose 停机宽限期为 10 分钟。未扫码不会仅因未登录而反复重启。
 - **数据隔离**：配置、登录和长期记忆持久化；队列使用私有 tmpfs；解密库及扫描出的数据库密钥使用 `tmpfs,noswap`，验证失败拒绝启动。
 - **网络**：账号容器采用 host 网络，仍保留私有 PID、IPC 和文件系统。管理台默认只监听 `127.0.0.1`；从旧版迁移时会将原来的 `0.0.0.0` 改为 loopback。
-- **管理台与 CLI**：Web 管理台带认证及 Host/Origin 检查；容器内可通过 `docker compose exec account wxbridge status` 等命令运维。现有 systemd 后端继续保留原行为。
+- **管理台与 CLI**：Web 管理台带认证及 Host/Origin 检查；容器内可通过 `docker compose exec account wxbridge status` 等命令运维；整个容器的启停与日志使用 `docker compose`。
 
 ### 图片上下文与引用改图
 
@@ -204,42 +204,6 @@ docker compose up -d --no-build
 
 改用镜像仓库时，可在构建主机上自行执行 `docker tag wxbridge:<提交> <仓库地址>/wxbridge:<提交>` 和 `docker push`，目标主机拉取后以 `WXBRIDGE_IMAGE=<仓库地址>/wxbridge:<提交> docker compose up -d --no-build` 启动。镜像内含微信客户端，请只推送到私有仓库。
 
-### 更新 systemd 安装
-
-现网的 systemd 安装（`/opt/wxbridge`）不经过 Docker。所有发布产物都在开发机上从**已提交、工作区干净**的代码生成，服务器只运行新版本自带的脚本。
-
-1. 在开发机生成发布包、解包为 stage，并从 stage 构建 wheel：
-
-   ```bash
-   npm --prefix src/web/frontend ci && npm --prefix src/web/frontend run build   # 发布包包含构建后的前端
-   python scripts/release.py build ../wxbridge-release.zip
-   python scripts/release.py extract ../wxbridge-release.zip ../wxbridge-stage      # 先校验再解包，目标目录须不存在
-   python scripts/build-wheels.py --source ../wxbridge-stage --out ../wxbridge-wheels
-   scp -r ../wxbridge-stage ../wxbridge-wheels 用户名@服务器地址:/var/tmp/
-   ```
-
-2. 在服务器上先查看计划。只改动机器人源码时，确认计划后加 `--apply` 应用：
-
-   ```bash
-   S=/var/tmp/wxbridge-stage
-   sudo python3 $S/scripts/deploy-release.py --stage $S --backup /var/backups/wxbridge/$(date +%Y%m%d-%H%M%S)
-   ```
-
-   若输出 `package_update_requires_upgrade_installation`（依赖或 `adapter_wc` 版本变化，例如本次改名为 `adapter_wc`），改用第 3 步。
-
-3. 依赖变化时在新环境中升级。先生成 baseline：它记录升级将覆盖或删除的已安装文件的 SHA-256，`prepare` 会拒绝改动此后又被修改过的文件。若有本地修改过的文件或不属于已安装版本的文件，命令只列出路径并退出；审阅后可加 `--allow-modified` 接受。
-
-   ```bash
-   B=/var/backups/wxbridge/$(date +%Y%m%d-%H%M%S)
-   sudo python3 $S/scripts/upgrade-installation.py baseline --stage $S --out /var/tmp/wxbridge-baseline.json
-   sudo python3 $S/scripts/upgrade-installation.py prepare --stage $S --wheels /var/tmp/wxbridge-wheels         --baseline /var/tmp/wxbridge-baseline.json --backup $B          # 安装到新环境，不停服务
-   sudo python3 $S/scripts/upgrade-installation.py apply --backup $B    # 切换环境并重启，机器人保持暂停
-   sudo wxbridge status                                                 # 只读验收
-   sudo python3 $S/scripts/upgrade-installation.py resume --backup $B   # 恢复机器人；有问题则改用 rollback
-   ```
-
-   `prepare` 需要从 PyPI 安装锁定的依赖。`rollback` 恢复代码与配置，不回放队列。
-
 ### 备份与迁移
 
 备份或迁移时保留根目录的 `provider.env` 和整个 `data/` 目录及权限：
@@ -273,7 +237,7 @@ docker compose up -d --no-build
 
    检查 `pyproject.toml`、`uv.lock`、依赖清单与 wheel 的变更后再提交本仓库，然后按[更新机器人](#更新机器人)重新部署。
 
-3. 安装与升级脚本需要复制或核对的适配库文件（helper 与图片资源、profile、密钥恢复模块）及图片 helper 运行目录，统一由适配库包内的 `deployment.json`（`adapter_wc.deployment`）声明，机器人不再自行列出。若新版本修改了其中的 helper 或图片资源、profile，还需审阅并同步更新已安装的 root helper，不能只更新 Python 环境。Docker 镜像构建时会自动安装与 wheel 一致的 helper。
+3. 镜像构建需要复制或核对的适配库文件（helper 与图片资源、profile、密钥恢复模块）及图片 helper 运行目录，统一由适配库包内的 `deployment.json`（`adapter_wc.deployment`）声明，由 `scripts/adapter-wheel.py` 校验读取，机器人不再自行列出。Docker 镜像构建时会自动安装与 wheel 一致的 helper；若新版本修改了 helper、图片资源或 profile，审阅后重新构建镜像即可。
 
 接口、登录、图片和离线分析的详细说明见适配库仓库的 `README.md` 与 `docs/`（`API.md`、`NATIVE_INTERNALS.md`、`ANALYSIS.md`）。
 
@@ -303,7 +267,7 @@ npm --prefix src/web/frontend run build        # 前端类型检查与构建
 git diff --check
 ```
 
-离线测试不读取真实配置、不联网、不调用真实模型、不发送微信消息。构建并检查发布 wheel：`python scripts/build-wheels.py --out dist` 后执行 `python scripts/smoke-app-wheel.py dist/wxbridge-*.whl`。提交前的其他约定见[开发约定](CONTRIBUTING.md)。
+离线测试不读取真实配置、不联网、不调用真实模型、不发送微信消息。提交前的其他约定见[开发约定](CONTRIBUTING.md)。
 
 ## 配置与参考资料
 

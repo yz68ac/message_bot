@@ -6,7 +6,6 @@ import signal
 import time
 import uuid
 
-from wxbridge.host.layout import container
 from wxbridge.host.system import atomic_json, atomic_file, need_root, private_json, service_account
 from wxbridge.control import request as control_request
 
@@ -96,7 +95,7 @@ def bind_account(paths, db_dir='auto', *, chat=None, identifier='default', curre
     account = service_account()
     database = checked_database(discover_database(paths, account) if db_dir == 'auto' else db_dir, account)
     with configuration_lock(paths):
-        config_path, helper_path = paths.app/'config.json', (Path('/etc/wxbridge/helper-config.json') if container() else paths.helper/'helper-config.json')
+        config_path, helper_path = paths.app/'config.json', paths.helper_config
         from wxbridge.config.compatibility import normalize_transport_config
         config, helper = normalize_transport_config(private_json(config_path)), private_json(helper_path)
         if helper.get('uid') != account.pw_uid:
