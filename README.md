@@ -87,14 +87,17 @@ git checkout main
 git pull --ff-only
 ```
 
-微信安装包不进入 Git（已被 `.gitignore` 排除），每台构建主机都需单独放置，并用仓库内的校验和核对：
+微信安装包不进入 Git（已被 `.gitignore` 排除），每台构建主机都需单独下载，并用仓库内的校验和核对。固定版本的安装包附在 [GitHub Release `wechat-4.1.13.26`](https://github.com/yz68ac/message_bot/releases/tag/wechat-4.1.13.26)：
 
 ```bash
 cd resources/wechat/linux-x86_64/4.1.13.26
-# 将 WeChatLinux_x86_64.deb 放入 installer/ 后执行：
+curl -fL -o installer/WeChatLinux_x86_64.deb \
+  https://github.com/yz68ac/message_bot/releases/download/wechat-4.1.13.26/WeChatLinux_x86_64.deb
 sha256sum -c --ignore-missing SHA256SUMS
 cd -
 ```
+
+腾讯官方地址 `https://dldir1v6.qq.com/weixin/Universal/Linux/WeChatLinux_x86_64.deb` 始终指向最新版，只有在腾讯尚未更新时才能得到同一文件；校验失败说明版本已变化，应改用上面的 Release 备份。微信为腾讯公司的专有软件，本项目与腾讯无关联，使用须遵守微信软件许可及服务协议。
 
 若本地仓库在 Windows 上，需把仓库复制到 Linux 主机（或在主机上克隆），并一并复制 `installer/WeChatLinux_x86_64.deb`。不要复制 `.venv/`、`node_modules/`、`provider.env`、`data/` 等本机文件；迁移已有账号时才复制后两者，见[备份与迁移](#备份与迁移)。
 

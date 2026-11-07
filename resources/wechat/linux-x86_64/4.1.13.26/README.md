@@ -23,7 +23,7 @@ a0db8caeee8d1e6cfe0aa5ce58710270f8d74a90ff4920f53a3fc22aa0956fe9
 
 实际校验包括：主程序 ELF 架构、复制前后 hash、deb 控制信息，以及流式读取 deb 中 `opt/wechat/wechat` 得到的 hash。三处主程序均与 固定版本适配器 wheel 中的原生 profile 一致。没有执行样本、安装软件或修改线上微信。
 
-来源是用户原先下载并提供的包；上述 hash 用于确认内容一致，不是本次取得的腾讯签名验证结果。精确文件信息见 [manifest.json](manifest.json)。
+来源是用户原先下载并提供的包；2026-11-07 从腾讯官方地址重新下载得到相同 SHA-256。上述 hash 用于确认内容一致，不是腾讯签名验证结果。精确文件信息见 [manifest.json](manifest.json)。
 
 ## 复制到其它机器后复核
 
@@ -42,4 +42,4 @@ Get-FileHash -Algorithm SHA256 -LiteralPath .\installer\WeChatLinux_x86_64.deb
 
 主程序单文件用于分析，不代表完整客户端安装；恢复安装使用 deb 及其系统依赖。SDK 不会自动加载这里的样本，helper 仍核验实际运行进程的主程序。
 
-这些大文件仅在本地资源目录保存，由 Git 忽略；克隆源码和安装 wheel 不会自动获得它们。不要用这里的二进制覆盖运行中的客户端来跳过版本检查。
+这些大文件由 Git 忽略；克隆源码和安装 wheel 不会自动获得它们。deb 可从 [GitHub Release `wechat-4.1.13.26`](https://github.com/yz68ac/message_bot/releases/tag/wechat-4.1.13.26) 下载到 `installer/` 后用 `sha256sum -c --ignore-missing SHA256SUMS` 复核；`binary/wechat` 未上传，需要时可从 deb 的 `opt/wechat/wechat` 解出。不要用这里的二进制覆盖运行中的客户端来跳过版本检查。
