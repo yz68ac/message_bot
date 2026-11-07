@@ -17,7 +17,7 @@ RUN = Path(os.environ.get('WX_RUNTIME_DIR', '/run/wxbridge-trial'))
 def desktop_handles():
     handles = []
     pids = set()
-    for name in ('wechat', 'xvfb', 'atspi', 'fluxbox', 'vnc'):
+    for name in ('wechat', 'xvfb', 'atspi', 'fluxbox'):
         path = RUN/(name+'.pid')
         if path.exists():
             pids.add(int(path.read_text().strip()))

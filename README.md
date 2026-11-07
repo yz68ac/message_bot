@@ -245,7 +245,7 @@ docker compose up -d --no-build
 
 ## 本地开发
 
-开发和离线测试可在 Linux、Windows 或 macOS 上进行，不需要 Docker、微信或 `adapter_wc` 源码仓库。需要 Git、Python 3.11+、[uv](https://docs.astral.sh/uv/) 和 Node.js（含 npm）。
+开发和离线测试可在 Linux、Windows 或 macOS 上进行，不需要 Docker、微信或 `adapter_wc` 源码仓库。需要 Git、Python 3.13+（与容器镜像一致）、[uv](https://docs.astral.sh/uv/) 和 Node.js（含 npm）。
 
 ### 安装依赖
 

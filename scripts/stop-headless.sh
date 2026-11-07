@@ -17,7 +17,6 @@ stop_one() {
 }
 
 stop_one wechat
-stop_one vnc
 stop_one fluxbox
 stop_one atspi
 stop_one xvfb

@@ -1,4 +1,4 @@
-"""Explicit synthetic preview, with no real account, credentials, database or systemd calls."""
+"""Explicit synthetic preview, with no real account, credentials, database or service calls."""
 import json
 import os
 from pathlib import Path

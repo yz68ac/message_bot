@@ -2,7 +2,6 @@
 # 在无物理桌面的 Linux 上启动一个独立的 Xvfb 会话并运行微信。
 # 用法：
 #   ./start-headless.sh            # 启动 Xvfb + dbus + at-spi + fluxbox + 微信
-#   ./start-headless.sh --vnc      # 同时启动 x11vnc（仅本机 5900，用 SSH 隧道访问）
 #   ./start-headless.sh --no-wechat
 #
 # 之后用：
@@ -26,11 +25,9 @@ if [ ! -s "$XAUTHORITY" ]; then
   xauth -f "$XAUTHORITY" add "$DISPLAY_NUM" . "$(mcookie)"
 fi
 
-START_VNC=0
 START_WECHAT=1
 for arg in "$@"; do
   case "$arg" in
-    --vnc) START_VNC=1 ;;
     --no-wechat) START_WECHAT=0 ;;
     *) echo "未知参数: $arg" >&2; exit 1 ;;
   esac
@@ -67,7 +64,7 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] || ! dbus-send --session --dest=org.fr
 fi
 export DBUS_SESSION_BUS_ADDRESS
 
-# 给 systemd 用户服务用的环境文件（systemd 不解析 export 语法）
+# 供主控与各组件读取的环境文件（KEY=VALUE，不含 export 语法）
 {
   echo "DISPLAY=$DISPLAY"
   echo "XAUTHORITY=$XAUTHORITY"
@@ -115,20 +112,6 @@ else
   log "未安装 fluxbox（可选）；没有窗口管理器时 xdotool 激活窗口可能不稳定"
 fi
 
-# ---------- x11vnc（可选，仅本机） ----------
-if [ "$START_VNC" = "1" ]; then
-  if ! command -v x11vnc >/dev/null 2>&1; then
-    log "未安装 x11vnc。sudo apt install x11vnc"
-  elif [ -f "$RUNTIME/vnc.pid" ] && kill -0 "$(cat "$RUNTIME/vnc.pid")" 2>/dev/null; then
-    log "x11vnc 已在运行"
-  else
-    log "启动 x11vnc：仅监听 127.0.0.1:5900（请用 SSH 隧道）"
-    x11vnc -display "$DISPLAY" -localhost -nopw -forever -shared -rfbport 5900 \
-      >"$RUNTIME/vnc.log" 2>&1 &
-    echo $! > "$RUNTIME/vnc.pid"
-  fi
-fi
-
 # ---------- 微信 ----------
 if [ "$START_WECHAT" = "1" ]; then
   if ! [ -x "$WECHAT_BIN" ]; then
@@ -156,7 +139,4 @@ fi
 
 log "完成。DISPLAY=$DISPLAY"
 log "日志目录：$RUNTIME"
-if [ "$START_VNC" = "1" ]; then
-  log "VNC：ssh -L 5900:127.0.0.1:5900 用户@这台机器 后连接 localhost:5900"
-fi
 log "检查：DISPLAY=$DISPLAY python3 -m wxbridge_cli debug check"

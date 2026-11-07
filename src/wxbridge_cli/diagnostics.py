@@ -39,7 +39,7 @@ def _check_locked(cfg: dict, group: str = "") -> int:
 
 def environment(cfg: dict) -> int:
     print(f"DISPLAY={os.environ.get('DISPLAY', '')}")
-    for tool in ("Xvfb", "dbus-launch", "xdotool", "x11vnc"):
+    for tool in ("Xvfb", "dbus-launch", "xdotool"):
         print(f"{tool}: {shutil.which(tool) or '未找到'}")
     print(f"消息来源：{cfg.account.source}")
     print(f"密钥文件存在：{Path(cfg.account.keys_file).is_file()}")
