@@ -2099,3 +2099,247 @@ button.text-link:hover {
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   RUNTIME LOGS & RECENT PROBLEMS
+   ========================================================================== */
+
+.nav-count.alert,
+.selected .nav-count.alert {
+  background: var(--ui-danger);
+  color: #ffffff;
+}
+
+.problems-panel {
+  margin-top: 20px;
+}
+
+.problems-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 26px 20px;
+}
+
+.problems-clear .el-icon {
+  color: var(--ui-success);
+}
+
+.problems-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 12px 22px;
+  font-size: 12px;
+  color: var(--ui-secondary);
+}
+
+.problems-summary b {
+  color: var(--ui-text);
+}
+
+.problems-chip {
+  padding: 1px 8px;
+  border-radius: 9999px;
+  background: var(--ui-surface-soft);
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.problem-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 22px;
+  border: 0;
+  border-top: 1px solid var(--ui-border-soft);
+  background: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.problem-line:hover {
+  background: var(--ui-surface-hover);
+}
+
+.problem-line code,
+.log-text {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--ui-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.problem-line code {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ui-secondary);
+}
+
+.problem-line time,
+.log-head time {
+  flex-shrink: 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.problem-source,
+.log-source {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.log-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ui-warning);
+}
+
+.logs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--ui-border-soft);
+}
+
+.logs-sources {
+  flex-wrap: wrap;
+}
+
+.logs-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.logs-level {
+  width: 128px;
+}
+
+.logs-search {
+  width: 200px;
+}
+
+.logs-alert {
+  margin: 12px 22px 0;
+  width: auto;
+}
+
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.log-entry {
+  padding: 10px 22px 10px 19px;
+  border-top: 1px solid var(--ui-border-soft);
+  border-left: 3px solid transparent;
+}
+
+.log-entry:first-child {
+  border-top: 0;
+}
+
+.log-entry.level-warning {
+  border-left-color: var(--ui-warning);
+}
+
+.log-entry.level-error,
+.log-entry.level-critical {
+  border-left-color: var(--ui-danger);
+  background: color-mix(in srgb, var(--ui-danger-soft) 45%, transparent);
+}
+
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.log-copy {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--ui-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.log-entry:hover .log-copy,
+.log-copy:focus-visible {
+  opacity: 1;
+}
+
+.log-copy:hover {
+  color: var(--ui-accent);
+}
+
+.log-detail {
+  margin-top: 6px;
+}
+
+.log-detail summary {
+  font-size: 11px;
+  color: var(--ui-accent);
+  cursor: pointer;
+}
+
+.log-detail pre {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  max-height: 360px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.logs-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--ui-border-soft);
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+@media (max-width: 600px) {
+  .logs-search {
+    width: 100%;
+  }
+  .logs-controls {
+    width: 100%;
+  }
+  .problem-line {
+    flex-wrap: wrap;
+  }
+  .problem-line code {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .log-copy {
+    opacity: 1;
+  }
+}

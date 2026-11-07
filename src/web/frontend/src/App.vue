@@ -13,6 +13,7 @@ import {
   Connection,
   CircleCheck,
   Clock,
+  Document,
 } from "@element-plus/icons-vue";
 import { api } from "./api";
 import { useConsoleSession } from "./composables/useConsoleSession";
@@ -20,6 +21,8 @@ import InstanceEditor from "./components/InstanceEditor.vue";
 import PromptEditor from "./components/PromptEditor.vue";
 import AccountSetup from "./components/AccountSetup.vue";
 import AccountSettings from "./components/AccountSettings.vue";
+import LogViewer from "./components/LogViewer.vue";
+import { entryTime, levelLabel, levelTag, sourceLabel, type LogFilter } from "./logModel";
 
 const componentLabel: Record<string, string> = { bot: "机器人", wechat: "微信会话", sender: "发送组件", recovery: "自动恢复", web: "管理台" };
 const channelLabel: Record<string, string> = { reply: "回复", image: "图片", background: "后台" };
@@ -39,9 +42,16 @@ const pages = [
     icon: ChatDotRound,
   },
   { id: "prompts", name: "系统提示词", subtitle: "PROMPTS", icon: EditPen },
+  { id: "logs", name: "运行日志", subtitle: "LOGS", icon: Document },
   { id: "services", name: "服务管理", subtitle: "SERVICES", icon: Setting },
 ];
 const page = ref("overview");
+const logPreset = ref<{ source: string; level: LogFilter }>({ source: "all", level: "all" });
+const problems = computed(() => snapshot.value?.problems);
+function openLogs(level: LogFilter = "warning", source = "all") {
+  logPreset.value = { source, level };
+  void navigate("logs");
+}
 const {authenticated, initialized, demo, password, loginBusy, loginError, snapshot,
        connected, loading, error, refresh, login, logout: closeSession, initialize, expire} = useConsoleSession({
   afterEnter: () => loadModels(),
@@ -340,13 +350,19 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
           :aria-label="item.name"
           :title="item.name"
           :class="{ selected: page === item.id }"
-          @click="navigate(item.id)"
+          @click="item.id === 'logs' ? openLogs('all') : navigate(item.id)"
         >
           <el-icon><component :is="item.icon" /></el-icon
           ><span>{{ item.name }}</span
           ><span v-if="item.id === 'instances'" class="nav-count">{{
             instances.length
-          }}</span>
+          }}</span
+          ><span
+            v-if="item.id === 'logs' && problems?.errors"
+            class="nav-count alert"
+            :title="`最近 24 小时 ${problems.errors} 条错误`"
+            >{{ problems.errors > 99 ? "99+" : problems.errors }}</span
+          >
         </button>
       </nav>
       <div class="sidebar-bottom">
@@ -413,7 +429,9 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
                     ? "为每段会话配置独立的回应方式。"
                     : page === "prompts"
                       ? "让回复更像你希望的样子。"
-                      : "管理机器人生命周期，保留微信登录会话。"
+                      : page === "logs"
+                        ? "各组件的运行输出、警告与错误，出问题时先看这里。"
+                        : "管理机器人生命周期，保留微信登录会话。"
               }}
             </p>
           </div>
@@ -594,6 +612,44 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
               ></el-button>
             </section>
           </div>
+          <section class="panel problems-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>最近问题</h2>
+                <small>最近 24 小时各组件的警告与错误</small>
+              </div>
+              <el-button size="small" @click="openLogs('warning')"
+                >查看运行日志 <el-icon><ArrowRight /></el-icon
+              ></el-button>
+            </div>
+            <div v-if="!problems" class="empty-state">正在读取日志…</div>
+            <div v-else-if="!problems.count" class="empty-state problems-clear">
+              <el-icon><CircleCheck /></el-icon> 最近 24 小时没有警告或错误
+            </div>
+            <template v-else>
+              <div class="problems-summary">
+                共 <b>{{ problems.count }}</b> 条，其中错误 <b>{{ problems.errors }}</b> 条
+                <span v-for="(count, name) in problems.by_source" :key="name" class="problems-chip"
+                  >{{ sourceLabel(String(name)) }} {{ count }}</span
+                >
+              </div>
+              <button
+                v-for="(item, index) in problems.latest"
+                :key="index"
+                type="button"
+                class="problem-line"
+                @click="openLogs(item.level === 'WARNING' ? 'warning' : 'error', item.source)"
+              >
+                <el-tag size="small" :type="levelTag(item.level)" effect="light" disable-transitions>{{
+                  levelLabel[item.level] || item.level
+                }}</el-tag>
+                <span class="problem-source">{{ sourceLabel(item.source) }}</span>
+                <code>{{ item.text }}</code>
+                <span v-if="item.count > 1" class="log-count">×{{ item.count }}</span>
+                <time>{{ entryTime(item) }}</time>
+              </button>
+            </template>
+          </section>
           <section class="panel events-panel">
             <div class="panel-heading">
               <div>
@@ -760,6 +816,13 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
             启停与模型应用只作用于选中实例。账号服务已停止时，启用配置会等待下次启动；配置状态与实际运行状态分别显示。
           </div>
         </section>
+
+        <LogViewer
+          v-else-if="page === 'logs'"
+          :source="logPreset.source"
+          :level="logPreset.level"
+          @error="fail"
+        />
 
         <PromptEditor v-else-if="page === 'prompts'" ref="promptEditor" :instances="instances" @saved="refresh" @error="fail" />
 

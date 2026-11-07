@@ -15,6 +15,17 @@ def bind_host(value):
         raise argparse.ArgumentTypeError('监听地址必须是本机地址或私有 IPv4 地址。') from None
 
 
+def log_config():
+    """Uvicorn's handlers with timestamps, so the console can order and date its own errors."""
+    from copy import deepcopy
+    from uvicorn.config import LOGGING_CONFIG
+    config=deepcopy(LOGGING_CONFIG)
+    config['formatters']['default']={'()':'logging.Formatter','fmt':'%(asctime)s %(levelname)s %(message)s',
+                                     'datefmt':'%Y-%m-%d %H:%M:%S'}
+    config['root']={'handlers':['default'],'level':'INFO'}
+    return config
+
+
 def main(argv=None):
     for stream in (sys.stdout,sys.stderr):
         if hasattr(stream,'reconfigure'):
@@ -61,10 +72,11 @@ def main(argv=None):
         allowed_hosts=['localhost','127.0.0.1','[::1]',args.host]
         allowed_hosts += [v for v in os.environ.get('WXBRIDGE_WEB_HOSTS', '').split(',') if v]
         app=create_app(root,password,services=services,demo=args.demo,catalog_file=args.catalog_file,
-                       allowed_hosts=allowed_hosts,health_token=os.environ.get('WXBRIDGE_WEB_HEALTH_TOKEN'))
+                       allowed_hosts=allowed_hosts,health_token=os.environ.get('WXBRIDGE_WEB_HEALTH_TOKEN'),
+                       log_dir=None if args.demo else os.environ.get('WX_RUNTIME_DIR') or None)
         address='['+args.host+']' if ':' in args.host else args.host
         print(f'Web 管理台：http://{address}:{args.port} （不会自动启动机器人）',flush=True)
-        uvicorn.run(app,host=args.host,port=args.port,access_log=False,proxy_headers=False)
+        uvicorn.run(app,host=args.host,port=args.port,access_log=False,proxy_headers=False,log_config=log_config())
     finally:
         if temporary:
             temporary.cleanup()

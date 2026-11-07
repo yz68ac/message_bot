@@ -82,6 +82,7 @@ SUITES = {
         'test_review_operations',
         'test_service_supervisor',
         'test_web_console',
+        'test_web_logs',
         'test_web_models',
     ),
 }

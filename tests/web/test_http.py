@@ -95,6 +95,21 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(response.status_code,200)
         return {'X-CSRF-Token':response.json()['csrf']}
 
+    def test_logs_require_a_session_and_only_accept_fixed_sources(self):
+        self.assertEqual(self.client.get('/api/logs').status_code,401)
+        self.login()
+        self.assertEqual(self.client.get('/api/logs',params={'source':'../config.json'}).status_code,400)
+        self.assertEqual(self.client.get('/api/logs',params={'level':'trace'}).status_code,400)
+        self.assertEqual(self.client.get('/api/logs',params={'limit':'many'}).status_code,422)
+        rows=self.client.get('/api/logs',params={'source':'bot','level':'error'}).json()['entries']
+        self.assertEqual(rows[0]['text'],'生成未启动 task=12 category=KeyError')
+        self.assertIn("KeyError: 'reply'",rows[0]['detail'])
+        merged=self.client.get('/api/logs').json()
+        self.assertEqual({row['source'] for row in merged['entries']},{'bot','supervisor','web'})
+        problems=self.client.get('/api/overview').json()['problems']
+        self.assertEqual((problems['count'],problems['errors']),(3,1))
+        self.assertEqual(problems['by_source'],{'bot':2,'supervisor':1})
+
     def test_health_is_public_and_contains_no_private_state(self):
         response=self.client.get('/healthz')
         self.assertEqual(response.status_code,200)

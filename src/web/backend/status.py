@@ -6,7 +6,7 @@ from wxbridge.app.status.snapshot import read_json, safe_events
 from wxbridge.control import BOT, SESSION
 
 
-def overview(repository, services, operations, *, demo=False):
+def overview(repository, services, operations, *, demo=False, logs=None):
     cfg = repository.account()
     runtime = Path(cfg.state_file).parent
     states = services.status()
@@ -59,6 +59,7 @@ def overview(repository, services, operations, *, demo=False):
             send_blocked=bool(live.get('send_blocked')), login_phase=login.get('phase','unknown'),
             config_pending=bool(desired and desired!=applied), config_valid=desired is not None),
         instances=entries, events=events, event_error=event_error,
+        problems=logs.problems() if logs is not None else None,
         capabilities=dict(service_control=services.allow_control,
                           login_actions=bool(services.allow_control), queue_actions=False,
                           instance_control=bool(bot['state']!='active' or fresh and live.get('features',{}).get('instance_control'))),

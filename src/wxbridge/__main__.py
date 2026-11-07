@@ -19,6 +19,7 @@ def main(argv=None):
     subprocess.run(['/usr/bin/python3', str(code/'scripts/boot-recovery.py'), 'runtime'], check=True)
     from wxbridge.host.supervisor import Supervisor
     supervisor = Supervisor(root)
+    supervisor.log_to_file()
     def stop(_signal,_frame):
         supervisor.stopping = True
     signal.signal(signal.SIGTERM,stop)

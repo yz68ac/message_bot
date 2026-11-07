@@ -39,6 +39,42 @@ def atomic_json(path, value):
             os.unlink(name)
 
 
+class BoundedLog(logging.Handler):
+    """The supervisor's own events for the web console: no links, regular file, fixed size."""
+
+    def __init__(self, path, *, uid=None, gid=None, limit=2*1024*1024):
+        super().__init__()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+        self.fd, self.limit = os.open(path, flags, 0o600), limit
+        try:
+            info = os.fstat(self.fd)
+            # Root changes the owner below; a planted hard link must not redirect that.
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('supervisor_log_not_regular')
+            if uid is not None:
+                os.fchown(self.fd, uid, gid)
+        except BaseException:
+            os.close(self.fd)
+            raise
+        self.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', '%Y-%m-%d %H:%M:%S'))
+
+    def emit(self, record):
+        try:
+            data = (self.format(record)+'\n').encode('utf-8', 'replace')
+            if os.fstat(self.fd).st_size+len(data) > self.limit:
+                os.ftruncate(self.fd, 0)
+            os.write(self.fd, data)
+        except Exception:
+            self.handleError(record)
+
+    def close(self):
+        with self.lock:
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
+        super().close()
+
+
 class Child:
     def __init__(self, name, command, *, uid=None, gid=None, groups=(), cwd=None, timeout=15):
         self.name, self.command = name, command
@@ -95,7 +131,8 @@ class Child:
             self.next_start = time.monotonic() + min(30, 2 ** min(self.failures, 5))
         else:
             self.next_start = time.monotonic()
-        log.info('component_exited name=%s code=%s intentional=%s', self.name, code, intentional)
+        (log.info if intentional or code == 0 else log.warning)(
+            'component_exited name=%s code=%s intentional=%s', self.name, code, intentional)
         return code, output, intentional
 
     def status(self):
@@ -167,6 +204,16 @@ class Supervisor:
         }
         self.socket, self.logs, self.lock_fd = None, {}, None
         self.log_threads = []
+
+    def log_to_file(self):
+        """Copy supervisor logging into the runtime directory that the web console reads."""
+        try:
+            handler = BoundedLog(self.run_dir/'supervisor.log', uid=self.account.pw_uid, gid=self.account.pw_gid)
+        except (OSError, ValueError) as exc:
+            log.warning('supervisor_log_unavailable category=%s', type(exc).__name__)
+            return None
+        logging.getLogger().addHandler(handler)
+        return handler
 
     def persist(self):
         atomic_json(self.state_file, dict(schema=2, bot_enabled=self.enabled, web_enabled=self.web_enabled))

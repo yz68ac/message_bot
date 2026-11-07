@@ -38,6 +38,32 @@ def seed(root):
         (path/'system.md').write_text('你正在微信里和朋友聊天。自然接话，日常回复一两句，答完就停。\n',encoding='utf-8')
     (runtime/'login-status.json').write_text(json.dumps(dict(phase='logged_in')),encoding='utf-8')
     (runtime/'bot.log').write_text('10-30 09:20:15 INFO 停止监听\n10-30 09:18:30 INFO 发送确认 task=12 local_id=36\n',encoding='utf-8')
+    seed_logs(runtime)
+
+
+def seed_logs(runtime, now=None):
+    """Synthetic component output, dated just before now, for the log page preview."""
+    now=time.time() if now is None else now
+    short=lambda ago: time.strftime('%m-%d %H:%M:%S',time.localtime(now-ago))
+    long=lambda ago: time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(now-ago))
+    (runtime/'bot-live.log').write_text('\n'.join((
+        f'{short(900)} INFO 接收判定 instance=private_demo local_id=35 reason=accepted',
+        f'{short(898)} INFO 开始生成 task=11 instance=private_demo',
+        f'{short(890)} WARNING 生成失败 task=11 version=1 category=APITimeoutError',
+        f'{short(600)} ERROR 生成未启动 task=12 category=KeyError',
+        'Traceback (most recent call last):',
+        '  File "/opt/wxbridge/src/wxbridge/app/execution/workers.py", line 88, in run',
+        '    options = settings["models"]["reply"]',
+        "KeyError: 'reply'",
+        f'{short(420)} INFO 发送确认 task=12 local_id=36',
+        f'{short(300)} INFO 停止监听 instance=private_demo','')),encoding='utf-8')
+    (runtime/'supervisor.log').write_text('\n'.join((
+        f'{long(1200)} INFO component_started name=bot pid=4101',
+        f'{long(610)} WARNING component_exited name=bot code=1 intentional=False',
+        f'{long(580)} INFO component_started name=bot pid=4188','')),encoding='utf-8')
+    (runtime/'web.log').write_text('\n'.join((
+        f'{long(1300)} INFO Started server process [4012]',
+        f'{long(1300)} INFO Application startup complete.','')),encoding='utf-8')
 
 
 class DemoServices:
