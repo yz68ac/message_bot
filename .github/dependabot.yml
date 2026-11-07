@@ -4,8 +4,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # Update dependency declarations and uv.lock, not the generated requirements exports.
-  - package-ecosystem: uv
-    directory: /
-    schedule:
-      interval: weekly
+# No uv entry: Dependabot reads the pinned requirements*.txt exports as manifests and
+# edits them without updating uv.lock, so its PRs always fail the dependency check.
+# Update Python packages by hand: uv lock --upgrade, then python scripts/dependencies.py.
