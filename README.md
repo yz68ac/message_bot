@@ -4,66 +4,70 @@ wxbridge 是运行在 Linux 微信上的 AI 机器人，支持群聊、私聊、
 
 一个微信账号对应一个容器，内部可创建多个独立会话实例。Docker 固定程序和依赖版本，账号登录、配置及长期数据保存在外部目录，方便在其他主机部署和升级。默认直连模型服务，不要求代理或 CPA。Docker 是唯一支持的部署方式。
 
-- [功能](#功能)
-- [项目结构](#项目结构)
-- [部署](#部署)
-- [日常使用](#日常使用)
-- [更新](#更新)
-- [本地开发](#本地开发)
-- [配置与参考资料](#配置与参考资料)
+- [概览](#概览)：工作原理、容器内的组件、功能、部署流程一览
+- [部署](#部署)：从零启动到机器人开始回复
+- [日常使用](#日常使用)：常用操作、排查问题、图片功能、多个账号
+- [文件位置](#文件位置)：部署目录、容器内路径、运行时文件、源码仓库
+- [更新](#更新)：更新机器人、分发镜像、备份与迁移、更新微信适配库
+- [本地开发](#本地开发) · [配置与参考资料](#配置与参考资料)
 
-## 功能
+## 概览
+
+### 工作原理
+
+```mermaid
+flowchart LR
+    WX["Linux 微信客户端<br/>（容器内虚拟桌面）"] -- 本地数据库 --> AD["adapter_wc<br/>解密与读取消息"]
+    AD --> BOT["机器人 wxbridge<br/>实例 · 队列 · 上下文 · 记忆"]
+    BOT -- 模型请求 --> PV["provider"] --> API["模型服务<br/>OpenAI / Anthropic / DeepSeek / Gemini"]
+    BOT -- 回复 --> HP["发送组件<br/>原生 helper"] -- 提交并核对发送记录 --> WX
+    WEB["Web 管理台"] -. 配置与启停 .-> BOT
+```
+
+一条消息的处理过程：
+
+1. 微信客户端在容器的虚拟桌面里运行，收到的消息写入它的本地数据库。
+2. 机器人通过 `adapter_wc` 读取解密后的数据库，找到属于某个会话实例的新消息，判断是否需要回复（群聊由参与模型决定）。
+3. 机器人组装上下文、记忆和图片，经 `provider` 调用该实例配置的模型。
+4. 回复交给发送组件提交到微信，机器人再从数据库核对这条消息确实已发出，然后才视为完成。
+
+### 容器内的组件
+
+`account` 容器里由一个主控进程管理以下组件。名称与管理台“服务管理”“运行日志”中显示的一致：
+
+| 组件 | 作用 | 日志文件 |
+| --- | --- | --- |
+| 主控 | 以 root 运行，启动、监控和重启下面各组件，执行管理台发来的启停请求 | `supervisor.log` |
+| 微信会话 | 虚拟桌面与 Linux 微信客户端，负责扫码登录和保持在线 | `session-supervisor.log` |
+| 发送组件 | 原生 helper，只向已授权的会话提交文本和图片 | `sender.log` |
+| 机器人 | 读取消息、调度实例队列、调用模型、写入记忆，核对发送结果 | `bot-live.log`（事件摘要另见 `bot.log`） |
+| 管理台 | Web 管理界面，默认监听 `127.0.0.1:8730` | `web.log` |
+| 自动恢复 | 扫描数据库密钥并准备解密库，供机器人读取 | `recovery.log` |
+
+微信会话、机器人和管理台以非特权用户 `wxbridge`（uid 10001）运行；主控、发送组件和自动恢复需要 root 权限。日志文件的位置见[运行时文件](#运行时文件)。
+
+### 功能
 
 - **多会话实例**：群聊、私聊各自配置模型、提示词、启停状态和记忆；实例可独立应用配置。
 - **模型接入**：支持 OpenAI、Anthropic、DeepSeek、Gemini 的现有协议适配，以及相应兼容网关；代理按需配置。
 - **AI 能力**：自动回复、群聊参与判断、上下文管理、长期记忆和关系学习，具体取决于模型与实例设置。
-- **图片能力**：理解引用图片，可选自动附带会话窗口中的图片；支持 OpenAI Images 和 Gemini 文生图，以及引用原图后的修改，详见[图片上下文与引用改图](#图片上下文与引用改图)。
-- **微信接入**：通过 [`adapter_wc`](#项目结构) 读取数据库、会话、消息和媒体，经原生 helper 提交文本、图片并协调发送确认。兼容档案针对微信 `4.1.13.26 x86_64`。
+- **图片能力**：理解引用图片，可选自动附带会话窗口中的图片；支持 OpenAI Images 和 Gemini 文生图，以及引用原图后的修改，详见[图片理解与引用改图](#图片理解与引用改图)。
+- **微信接入**：通过 [`adapter_wc`](#源码仓库) 读取数据库、会话、消息和媒体，经原生 helper 提交文本、图片并协调发送确认。兼容档案针对微信 `4.1.13.26 x86_64`。
 - **运行管理**：集成虚拟桌面、扫码登录、恢复和有序停机；Compose 停机宽限期为 10 分钟。未扫码不会仅因未登录而反复重启。
 - **数据隔离**：配置、登录和长期记忆持久化；队列使用私有 tmpfs；解密库及扫描出的数据库密钥使用 `tmpfs,noswap`，验证失败拒绝启动。
 - **网络**：账号容器采用 host 网络，仍保留私有 PID、IPC 和文件系统。管理台默认只监听 `127.0.0.1`；从旧版迁移时会将原来的 `0.0.0.0` 改为 loopback。
-- **管理台与 CLI**：Web 管理台带认证及 Host/Origin 检查；容器内可通过 `docker compose exec account wxbridge status` 等命令运维；整个容器的启停与日志使用 `docker compose`。
+- **管理台与 CLI**：Web 管理台带认证及 Host/Origin 检查，可查看各组件的运行日志与错误；容器内可通过 `docker compose exec account wxbridge status` 等命令运维；整个容器的启停与日志使用 `docker compose`。
 
-### 图片上下文与引用改图
+### 部署流程一览
 
-图片理解使用实例的回复模型，该模型需支持图片输入。在管理台实例配置中打开“自动将图片加入上下文”，或在实例 JSON 中设置以下字段，再保存并应用：
-
-```json
-{
-  "vision": {
-    "enabled": true,
-    "context_images_enabled": true,
-    "max_images": 4
-  }
-}
-```
-
-`vision.enabled` 默认开启，`vision.context_images_enabled` 默认关闭。关闭自动上下文时，仍可通过微信“引用”图片发问；开启后，会从当前会话保留的上下文中附带图片，不扩大历史读取范围。引用图片优先，其余按最近图片补充，共用每次最多 4 张、每张最多 8 MiB 的限制；读不到图片时会标明不可用。
-
-生图和改图还需开启 `image_generation.enabled`，选择 `model_clients.image` 并填写 `models.image.model`。回复模型需支持工具调用，改图时还需能读取引用图片。图片连接可选 `openai` 或 `gemini`，配置见[实例示例](examples/instance/config.example.jsonc)和[模型服务配置](#2-填写模型密钥)。
-
-修改图片时，在微信中引用要修改的那张图片，再描述要求，例如“把背景改成雪山”。每轮最多一个图片任务；只有本轮实际读到的引用图片可作为改图来源，普通历史图片不会自动作为改图原图。原图不可用时需重新引用；编辑接口失败也不会自动切换成文生图。
-
-机器人生成的图片在确认发出后会按上下文窗口有限保留，供后续识图或引用修改；这不是长期图片记忆，重建账号容器会清空临时索引。图片输入的用量不包含在 `target.context_max_chars` 文本字符预算中，同一图片在后续请求中再次附带也会产生输入用量，实际以模型服务返回的 usage 为准。
-
-## 项目结构
-
-系统由两个独立的 Git 仓库组成：本仓库 [`message_bot`](https://github.com/yz68ac/message_bot) 和微信适配库 [`adapter_wc`](https://github.com/yz68ac/adapter_wc)。需要同时开发两者时，建议放在同一父目录下：
-
-```text
-bot/
-├── message_bot/   本仓库：机器人（wxbridge）、Web 管理台、模型调用库（src/provider）
-└── adapter_wc/    微信适配库 adapter_wc：数据库、消息、媒体、登录与原生提交
-```
-
-| 组件 | 位置 | 职责 |
+| 步骤 | 做什么 | 在哪里 |
 | --- | --- | --- |
-| wxbridge | `src/wxbridge`、`src/wxbridge_cli` | 实例、授权、Journal、发送确认、记忆和学习；CLI 入口 `wxbridge` |
-| Web 管理台 | `src/web` | FastAPI 后端与 Vue 前端 |
-| model-provider | `src/provider` | 模型协议和 SDK 调用，导入名 `provider`，见 [provider 说明](src/provider/README.md) |
-| adapter_wc | `../adapter_wc`，以固定 wheel 形式放在 `dependencies/` | 微信数据库、消息、媒体与原生提交，接口见适配库仓库的 `docs/API.md` |
+| [0. 准备](#0-准备代码和微信安装包) | 获取代码，下载并校验微信安装包 | Linux 主机 |
+| [1. 启动](#1-启动) | 构建镜像并启动容器，自动生成 `data/`、`provider.env` 和管理台密码 | Linux 主机 |
+| [2. 填写密钥](#2-填写模型密钥) | 在 `provider.env` 填写所用模型服务的密钥 | Linux 主机 |
+| [3. 登录与配置](#3-打开管理台并登录微信) | 扫码登录微信，创建会话实例，绑定账号，启动机器人 | 管理台 |
 
-机器人**不**直接使用 `../adapter_wc` 的工作区源码，而是依赖 `dependencies/adapter_wc-<版本>-py3-none-any.whl`；`dependencies/adapter_wc.json` 记录该 wheel 的版本、SHA-256、源码提交和标签。Docker 构建、离线测试和发布都只读取这个固定产物，因此**部署和日常开发不需要 `adapter_wc` 仓库**，只有修改适配库时才需要（见[更新微信适配库](#更新微信适配库)）。
+之后的修改、排查和更新见[日常使用](#日常使用)与[更新](#更新)。
 
 ## 部署
 
@@ -113,7 +117,7 @@ WXBRIDGE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
 
 首次构建需要联网，并需要第 0 步放置的微信安装包。镜像会校验安装资源、固定的 `adapter_wc` wheel 及其原生资源，并构建依赖。构建按变动频率分层：微信客户端、Python 依赖和前端依赖只在安装包、锁文件或前端变化时重建，日常只改源码的更新只重做最后几步；下载缓存保留在 BuildKit 缓存中，微信安装包只在构建时挂载、不写入镜像。其他同架构主机可直接使用构建好的镜像，无需微信安装包和构建工具，见[分发镜像](#分发镜像)。当前尚未提供公开镜像。
 
-Compose 自动创建 `data/` 和 `provider.env`，设置初始目录权限并生成管理台密码。短暂运行的 `init` 服务完成后退出，长期运行的是 `account` 容器。若 Docker 要求管理员权限，在命令前加 `sudo`。
+Compose 自动创建 `data/` 和 `provider.env`，设置初始目录权限并生成管理台密码（各文件的作用见[部署目录](#部署目录宿主机)）。短暂运行的 `init` 服务完成后退出，长期运行的是 `account` 容器。若 Docker 要求管理员权限，在命令前加 `sudo`。
 
 ### 2. 填写模型密钥
 
@@ -163,23 +167,166 @@ ssh -L 8730:127.0.0.1:8730 用户名@服务器地址
 
 ## 日常使用
 
+### 常用操作
+
 | 操作 | 方式 |
 | --- | --- |
 | 修改实例、提示词 | 管理台保存并应用，无需重启容器 |
 | 修改模型密钥、网关或代理 | 修改 `provider.env`，在服务管理应用机器人配置 |
 | 查看状态、启停机器人 | 管理台“服务管理”，或 `docker compose exec account wxbridge status` |
-| 排查错误 | 管理台“运行日志”：按组件和级别筛选，展开堆栈；工作台“最近问题”汇总 24 小时内的警告与错误 |
+| 排查错误 | 管理台“运行日志”和工作台“最近问题”，见[排查问题](#排查问题) |
 | 查看容器日志 | `docker compose logs --tail 100 -f account` |
 | 停止整套环境 | `docker compose stop` |
 | 重启整套环境 | `docker compose restart account` |
 
-运行日志读取主控为各组件保存的输出（机器人、微信会话、发送组件、管理台、自动恢复与主控本身），每个文件只读最近 512 KB。警告、错误和堆栈完整显示，普通信息只保留事件名和状态码；密钥、令牌和长串会自动隐藏，但错误信息中仍可能出现聊天片段，管理台口令请妥善保管。
+完整重启或重建容器会清空队列、游标和未完成任务，以最新消息重新建立基线，不补回复旧消息。仅应用配置或重启内部机器人会保留内存队列和游标。微信登录与长期数据保留，微信要求手机确认时按提示操作。哪些文件会保留、哪些会清空，见[文件位置](#文件位置)。
 
-完整重启或重建容器会清空队列、游标和未完成任务，以最新消息重新建立基线，不补回复旧消息。仅应用配置或重启内部机器人会保留内存队列和游标。微信登录与长期数据保留，微信要求手机确认时按提示操作。
+### 排查问题
+
+出现异常时按以下顺序查看：
+
+1. **管理台工作台的“最近问题”**：汇总最近 24 小时各组件的警告与错误，点击可跳到对应日志。
+2. **管理台“运行日志”**：按组件和级别筛选、搜索文本，展开错误的堆栈；同一错误连续重复时合并显示次数。
+3. **容器内 CLI**：管理台打不开时使用，例如：
+
+   ```bash
+   docker compose exec account wxbridge status
+   docker compose exec account wxbridge logs --component bot --lines 200 -f   # 可选 bot、wechat、web、sender
+   ```
+
+4. **`docker compose logs account`**：包含所有组件的输出，容器无法启动时也能查看。
+
+运行日志读取主控为各组件保存的输出（见[容器内的组件](#容器内的组件)），每个文件只读最近 512 KB。警告、错误和堆栈完整显示，普通信息只保留事件名和状态码；密钥、令牌和长串会自动隐藏，但错误信息中仍可能出现聊天片段，管理台口令请妥善保管。这些日志位于容器的临时目录，重启容器后清空。
+
+### 图片理解与引用改图
+
+图片理解使用实例的回复模型，该模型需支持图片输入。在管理台实例配置中打开“自动将图片加入上下文”，或在实例 JSON 中设置以下字段，再保存并应用：
+
+```json
+{
+  "vision": {
+    "enabled": true,
+    "context_images_enabled": true,
+    "max_images": 4
+  }
+}
+```
+
+`vision.enabled` 默认开启，`vision.context_images_enabled` 默认关闭。关闭自动上下文时，仍可通过微信“引用”图片发问；开启后，会从当前会话保留的上下文中附带图片，不扩大历史读取范围。引用图片优先，其余按最近图片补充，共用每次最多 4 张、每张最多 8 MiB 的限制；读不到图片时会标明不可用。
+
+生图和改图还需开启 `image_generation.enabled`，选择 `model_clients.image` 并填写 `models.image.model`。回复模型需支持工具调用，改图时还需能读取引用图片。图片连接可选 `openai` 或 `gemini`，配置见[实例示例](examples/instance/config.example.jsonc)和[模型服务配置](#2-填写模型密钥)。
+
+修改图片时，在微信中引用要修改的那张图片，再描述要求，例如“把背景改成雪山”。每轮最多一个图片任务；只有本轮实际读到的引用图片可作为改图来源，普通历史图片不会自动作为改图原图。原图不可用时需重新引用；编辑接口失败也不会自动切换成文生图。
+
+机器人生成的图片在确认发出后会按上下文窗口有限保留，供后续识图或引用修改；这不是长期图片记忆，重建账号容器会清空临时索引。图片输入的用量不包含在 `target.context_max_chars` 文本字符预算中，同一图片在后续请求中再次附带也会产生输入用量，实际以模型服务返回的 usage 为准。
 
 ### 多个账号
 
 同一份账号数据只能由一个运行环境使用。第二个账号应使用独立部署目录、Compose 项目名和端口；可用 `WXBRIDGE_WEB_PORT` 设置各账号管理台的实际监听端口，例如 `WXBRIDGE_WEB_PORT=8731 docker compose -p account2 up -d`（启动时覆盖已保存的端口）；`WXBRIDGE_IMAGE` 指定镜像。多个账号共享主机网络，需选择不同端口。
+
+## 文件位置
+
+### 部署目录（宿主机）
+
+部署目录就是克隆下来的仓库根目录。运行后新增的只有 `provider.env` 和 `data/`，两者都不进入 Git：
+
+```text
+message_bot/
+├── compose.yaml          容器定义：挂载、tmpfs、资源限制
+├── Dockerfile            镜像构建
+├── provider.env          模型密钥、网关与代理（首次启动时创建，需自行填写）
+├── resources/wechat/…/installer/WeChatLinux_x86_64.deb   微信安装包（仅构建时需要）
+└── data/                 账号的全部持久数据（首次启动时创建）
+    ├── config/           账号与实例配置
+    │   ├── config.json                     账号配置：数据库目录、队列、发送授权等
+    │   └── instance/<实例ID>/
+    │       ├── config.json                 实例配置：会话、模型、记忆、图片等
+    │       ├── system.md                   系统提示词
+    │       └── .web-history/               管理台保存的提示词历史
+    ├── home/             wxbridge 用户的主目录
+    │   ├── （微信客户端数据）               登录状态和原始数据库 db_storage
+    │   └── memory/                         长期记忆
+    ├── settings/         管理台与发送组件的设置
+    │   ├── web-password                    管理台密码
+    │   ├── web.json                        管理台监听地址和端口
+    │   ├── helper-config.json              发送组件的会话授权清单
+    │   └── boot.json                       启动时使用的数据库目录
+    ├── service/
+    │   └── state.json                      机器人、管理台是否处于启用状态
+    └── catalog/
+        └── models.json                     模型目录缓存
+```
+
+### 容器内路径对照
+
+| 宿主机 | 容器内 | 内容 | 重启或重建容器后 |
+| --- | --- | --- | --- |
+| `data/config/` | `/var/lib/wxbridge-config` | 账号与实例配置 | 保留 |
+| `data/home/` | `/var/lib/wxbridge` | 微信登录、原始数据库、长期记忆 | 保留 |
+| `data/settings/` | `/etc/wxbridge` | 管理台密码与设置、发送授权 | 保留 |
+| `data/service/` | `/var/lib/wxbridge-service` | 启停状态 | 保留 |
+| `data/catalog/` | `/var/lib/wxbridge-web` | 模型目录缓存 | 保留 |
+| 部署目录（只读） | `/run/secrets/wxbridge` | 读取其中的 `provider.env` | 保留 |
+| — | `/run/wxbridge-trial` | 运行时文件：日志、队列、游标、状态，见下节 | 清空 |
+| — | `/run/wxbridge-sensitive` | 数据库密钥 `keys.json` 与解密库 `decrypted/`，内存盘且不进入 swap | 清空 |
+| — | `/run/wxbridge-control` | 主控的控制套接字 | 清空 |
+| 镜像内 | `/opt/wxbridge`、`/opt/wechat`、`/opt/wxbridge-native-helper` | 程序与 Python 环境、微信客户端、原生 helper | 随镜像更新 |
+
+管理台和 CLI 中显示的都是容器内路径。在容器内执行 `wxbridge config` 可列出当前使用的配置文件位置。
+
+### 运行时文件
+
+`/run/wxbridge-trial` 是容器内 512 MB 的内存盘，只在容器运行期间存在：
+
+| 文件 | 内容 |
+| --- | --- |
+| `supervisor.log`、`bot-live.log`、`session-supervisor.log`、`sender.log`、`web.log`、`recovery.log` | 各组件输出，对应[容器内的组件](#容器内的组件)，管理台“运行日志”读取的就是这些文件 |
+| `bot.log` | 机器人的事件摘要，工作台“最近运行事件”读取此文件 |
+| `queue.sqlite3` | 待处理的消息和任务队列 |
+| `state.json` | 消息读取游标等运行状态 |
+| `account-status.json`、`login-status.json` | 机器人心跳与微信登录状态，供管理台显示 |
+| `native-helper.sock` | 机器人与发送组件之间的套接字 |
+
+需要长期保留的排查信息，请在重启前从管理台复制，或用 `docker compose logs account` 导出。
+
+### 源码仓库
+
+系统由两个独立的 Git 仓库组成：本仓库 [`message_bot`](https://github.com/yz68ac/message_bot) 和微信适配库 [`adapter_wc`](https://github.com/yz68ac/adapter_wc)。需要同时开发两者时，建议放在同一父目录下：
+
+```text
+bot/
+├── message_bot/   本仓库：机器人（wxbridge）、Web 管理台、模型调用库（src/provider）
+└── adapter_wc/    微信适配库 adapter_wc：数据库、消息、媒体、登录与原生提交
+```
+
+本仓库的主要目录：
+
+```text
+message_bot/
+├── src/
+│   ├── wxbridge/         机器人：实例、队列、上下文、记忆、发送确认（代码地图见其 README）
+│   │   └── host/         容器初始化、主控与各组件的启动
+│   ├── wxbridge_cli/     容器内命令 wxbridge
+│   ├── web/backend/      管理台后端（FastAPI）
+│   ├── web/frontend/     管理台前端（Vue）
+│   └── provider/         模型协议与 SDK 调用
+├── prompts/              默认提示词与表情、话题数据
+├── examples/             账号与实例配置示例
+├── config.defaults.json  配置默认值（由 scripts/config-defaults.py 生成）
+├── dependencies/         固定版本的 adapter_wc wheel 及其校验记录
+├── resources/wechat/     微信安装包的版本清单与校验和
+├── scripts/              构建、测试、镜像分发与适配库更新脚本
+└── tests/                离线测试
+```
+
+| 组件 | 位置 | 职责 |
+| --- | --- | --- |
+| wxbridge | `src/wxbridge`、`src/wxbridge_cli` | 实例、授权、Journal、发送确认、记忆和学习；CLI 入口 `wxbridge` |
+| Web 管理台 | `src/web` | FastAPI 后端与 Vue 前端 |
+| model-provider | `src/provider` | 模型协议和 SDK 调用，导入名 `provider`，见 [provider 说明](src/provider/README.md) |
+| adapter_wc | `../adapter_wc`，以固定 wheel 形式放在 `dependencies/` | 微信数据库、消息、媒体与原生提交，接口见适配库仓库的 `docs/API.md` |
+
+机器人**不**直接使用 `../adapter_wc` 的工作区源码，而是依赖 `dependencies/adapter_wc-<版本>-py3-none-any.whl`；`dependencies/adapter_wc.json` 记录该 wheel 的版本、SHA-256、源码提交和标签。Docker 构建、离线测试和发布都只读取这个固定产物，因此**部署和日常开发不需要 `adapter_wc` 仓库**，只有修改适配库时才需要（见[更新微信适配库](#更新微信适配库)）。
 
 ## 更新
 
@@ -191,7 +338,7 @@ git pull --ff-only
 WXBRIDGE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
 ```
 
-使用预先构建的镜像时，按[分发镜像](#分发镜像)导入新镜像，切换到对应提交后执行 `docker compose up -d --no-build`。重建容器会清空队列和游标并以最新消息重新建立基线（见[日常使用](#日常使用)），建议在空闲时更新；账号登录、配置和长期数据保留在 `data/` 中。
+使用预先构建的镜像时，按[分发镜像](#分发镜像)导入新镜像，切换到对应提交后执行 `docker compose up -d --no-build`。重建容器会清空队列和游标并以最新消息重新建立基线（见[常用操作](#常用操作)），建议在空闲时更新；账号登录、配置和长期数据保留在 `data/` 中。
 
 ### 分发镜像
 
@@ -214,15 +361,7 @@ docker compose up -d --no-build
 
 ### 备份与迁移
 
-备份或迁移时保留根目录的 `provider.env` 和整个 `data/` 目录及权限：
-
-| 目录 | 内容 |
-| --- | --- |
-| `data/config/` | 账号与实例配置 |
-| `data/home/` | 微信登录、原始数据库和记忆 |
-| `data/settings/` | 管理台及 helper 设置 |
-| `data/service/` | 启停状态 |
-| `data/catalog/` | 模型目录缓存 |
+备份或迁移时保留根目录的 `provider.env` 和整个 `data/` 目录及权限，各子目录的内容见[部署目录](#部署目录宿主机)。容器内的运行时文件和解密库不需要备份，启动时会重新生成。
 
 迁移到新主机时，先在新主机完成[准备代码](#0-准备代码和微信安装包)，复制上述文件后再执行[启动](#1-启动)中的构建命令。不要让两个运行环境同时使用同一份数据。
 
@@ -263,6 +402,15 @@ npm --prefix src/web/frontend ci
 ```
 
 `uv` 会在 `.venv/` 中创建虚拟环境，并从 `dependencies/` 中的固定 wheel 安装 `adapter_wc`。下文的 `python` 均指该虚拟环境中的解释器：可先激活（Linux/macOS `source .venv/bin/activate`，Windows Git Bash `source .venv/Scripts/activate`），或改用 `uv run python`。移动仓库目录后需重新执行 `uv sync`，否则虚拟环境仍指向旧路径。
+
+### 预览管理台
+
+```bash
+npm --prefix src/web/frontend run build
+python -m web.backend --demo                    # 使用合成数据，口令 wxbridge-demo-local
+```
+
+演示模式只操作临时目录中的合成实例和示例日志，不连接真实微信、不调用模型，打开 http://127.0.0.1:8730 即可。
 
 ### 运行检查
 
