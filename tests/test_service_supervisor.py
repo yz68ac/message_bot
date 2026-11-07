@@ -50,6 +50,7 @@ module=types.ModuleType('wxbridge.host.supervisor')
 class Supervisor:
  def __init__(self,*args,**kwargs):
   from wxbridge.control import request
+ def log_to_file(self):pass
  def run(self):print('entry_imports_complete_package')
 module.Supervisor=Supervisor
 sys.modules['wxbridge.host.supervisor']=module
