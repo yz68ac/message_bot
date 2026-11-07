@@ -64,7 +64,8 @@ def export(out, *, root=ROOT, run=subprocess.run, save=save_compressed, status=g
     archive, description = out/f'wxbridge-image-{short}.tar.gz', out/f'wxbridge-image-{short}.json'
     if archive.exists() or description.exists():
         raise ValueError('image_export_exists')
-    run(['docker', 'build', '-t', tag, '-t', f'{REPOSITORY}:local', str(root)], check=True)
+    run(['docker', 'build', '--build-arg', f'WXBRIDGE_COMMIT={commit}',
+         '-t', tag, '-t', f'{REPOSITORY}:local', str(root)], check=True)
     save(tag, archive)
     value = dict(format=1, image=tag, commit=commit, adapter_wc=adapter,
                  archive=archive.name, sha256=sha256(archive), bytes=archive.stat().st_size)

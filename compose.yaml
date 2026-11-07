@@ -1,8 +1,12 @@
-# Run: docker compose up -d --build
+# Run: WXBRIDGE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
+# (without WXBRIDGE_COMMIT the image works but reports its version as unknown)
 services:
   init:
     image: ${WXBRIDGE_IMAGE:-wxbridge:local}
-    build: .
+    build:
+      context: .
+      args:
+        WXBRIDGE_COMMIT: ${WXBRIDGE_COMMIT:-}
     entrypoint: [/opt/wxbridge/.venv/bin/python, -m, wxbridge.host.container, initialize, /project/data, /project]
     volumes:
       - ./:/project
@@ -12,7 +16,10 @@ services:
 
   account:
     image: ${WXBRIDGE_IMAGE:-wxbridge:local}
-    build: .
+    build:
+      context: .
+      args:
+        WXBRIDGE_COMMIT: ${WXBRIDGE_COMMIT:-}
     depends_on:
       init:
         condition: service_completed_successfully

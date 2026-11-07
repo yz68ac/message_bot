@@ -103,8 +103,10 @@ cd -
 在仓库根目录执行：
 
 ```bash
-docker compose up -d --build
+WXBRIDGE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
 ```
+
+`WXBRIDGE_COMMIT` 把当前提交写入镜像，供状态和日志显示运行版本；构建上下文不含 `.git`，省略时机器人照常运行，但版本显示为 `unknown`。若工作区有未提交的修改，镜像仍会标记为 HEAD 的提交；正式部署请从已提交的代码构建，或使用[分发镜像](#分发镜像)（自动写入提交）。
 
 首次构建需要联网，并需要第 0 步放置的微信安装包。镜像会校验安装资源、固定的 `adapter_wc` wheel 及其原生资源，并构建依赖。构建按变动频率分层：微信客户端、Python 依赖和前端依赖只在安装包、锁文件或前端变化时重建，日常只改源码的更新只重做最后几步；下载缓存保留在 BuildKit 缓存中，微信安装包只在构建时挂载、不写入镜像。其他同架构主机可直接使用构建好的镜像，无需微信安装包和构建工具，见[分发镜像](#分发镜像)。当前尚未提供公开镜像。
 
@@ -180,7 +182,7 @@ ssh -L 8730:127.0.0.1:8730 用户名@服务器地址
 ```bash
 cd message_bot
 git pull --ff-only
-docker compose up -d --build
+WXBRIDGE_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
 ```
 
 使用预先构建的镜像时，按[分发镜像](#分发镜像)导入新镜像，切换到对应提交后执行 `docker compose up -d --no-build`。重建容器会清空队列和游标并以最新消息重新建立基线（见[日常使用](#日常使用)），建议在空闲时更新；账号登录、配置和长期数据保留在 `data/` 中。
@@ -216,7 +218,7 @@ docker compose up -d --no-build
 | `data/service/` | 启停状态 |
 | `data/catalog/` | 模型目录缓存 |
 
-迁移到新主机时，先在新主机完成[准备代码](#0-准备代码和微信安装包)，复制上述文件后再执行 `docker compose up -d --build`。不要让两个运行环境同时使用同一份数据。
+迁移到新主机时，先在新主机完成[准备代码](#0-准备代码和微信安装包)，复制上述文件后再执行[启动](#1-启动)中的构建命令。不要让两个运行环境同时使用同一份数据。
 
 ### 更新微信适配库
 

@@ -55,5 +55,9 @@ RUN --mount=type=cache,target=/var/cache/wxbridge-frida groupadd -g 10001 wxbrid
     && .venv/bin/python -c "from importlib.resources import files; import shutil; from adapter_wc.deployment import IMAGE_ASSETS; [shutil.copyfile(files('adapter_wc.native').joinpath(n), '/opt/wxbridge-native-helper/'+n) for n in IMAGE_ASSETS]"
 RUN mkdir -p /usr/local/lib/wxbridge-recovery && cp -r src/wxbridge /usr/local/lib/wxbridge-recovery/ && .venv/bin/python -c "from pathlib import Path; import shutil,adapter_wc; shutil.copytree(Path(adapter_wc.__file__).parent, '/usr/local/lib/wxbridge-recovery/adapter_wc', ignore=shutil.ignore_patterns('__pycache__','*.pyc'))" && ln -s /opt/wxbridge/.venv/bin/wxbridge /usr/local/bin/wxbridge
 RUN .venv/bin/python -c "import hashlib,json; from pathlib import Path; from importlib.resources import files; from adapter_wc.deployment import NATIVE_PROFILE; expected=json.loads(files('adapter_wc').joinpath(NATIVE_PROFILE).read_text())['sha256']; assert hashlib.file_digest(open('/opt/wechat/wechat','rb'),'sha256').hexdigest()==expected"
+# Build identity for status and logs. The context excludes .git, so the commit comes from a
+# build argument; it is declared last so a new commit reuses every earlier layer. Empty = unknown.
+ARG WXBRIDGE_COMMIT=
+RUN printf '%s\n' "$WXBRIDGE_COMMIT" > /opt/wxbridge/BUILD_COMMIT
 ENV WXBRIDGE_RUNTIME=container
 ENTRYPOINT ["/opt/wxbridge/.venv/bin/python", "-m", "wxbridge.host.container"]

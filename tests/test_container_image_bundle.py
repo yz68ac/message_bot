@@ -52,7 +52,8 @@ class ContainerImageBundleTests(unittest.TestCase):
 
     def test_export_tags_by_commit_and_describes_a_verifiable_archive(self):
         value, fake = self.export()
-        self.assertEqual(self.calls, [['docker', 'build', '-t', 'wxbridge:cccccccccccc', '-t', 'wxbridge:local', str(ROOT)]])
+        self.assertEqual(self.calls, [['docker', 'build', '--build-arg', 'WXBRIDGE_COMMIT='+COMMIT,
+                                       '-t', 'wxbridge:cccccccccccc', '-t', 'wxbridge:local', str(ROOT)]])
         self.assertEqual(fake.args, ['docker', 'save', 'wxbridge:cccccccccccc'])
         archive = self.out/'wxbridge-image-cccccccccccc.tar.gz'
         self.assertEqual(gzip.decompress(archive.read_bytes()), b'image layers')
