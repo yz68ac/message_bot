@@ -2,7 +2,7 @@
 from types import MappingProxyType
 
 from .base import ModelError, ModelRequest, ModelResult, ProtocolAdapter
-from .openai_chat_completions import ChatCompletionsAdapter
+from .openai_chat_completions import ChatCompletionsAdapter, CompatibleChatCompletionsAdapter
 from .deepseek import DeepSeekAdapter
 from .openai_responses import ResponsesAdapter
 from .anthropic_messages import AnthropicAdapter
@@ -11,7 +11,7 @@ from .gemini import GeminiAdapter
 _ADAPTERS = MappingProxyType({
     'deepseek': DeepSeekAdapter,
     'openai': ChatCompletionsAdapter,  # Existing configuration spelling.
-    'openai_compatible': ChatCompletionsAdapter,
+    'openai_compatible': CompatibleChatCompletionsAdapter,
     'openai_responses': ResponsesAdapter,
     'anthropic': AnthropicAdapter,
     'anthropic_messages': AnthropicAdapter,

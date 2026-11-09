@@ -156,6 +156,9 @@ class GeminiAdapter:
             config['tool_config'] = dict(function_calling_config=calling)
         elif request.tool_choice not in (None, 'auto', 'none'):
             raise ModelError('invalid_tool_choice')
+        if request.json_output and not declarations:
+            # Gemini JSON mode cannot be combined with function calling; tool requests keep plain text.
+            config['response_mime_type'] = 'application/json'
         return dict(model=settings['model'], contents=contents, config=config)
 
     @guard_conversion_errors('invalid_response')

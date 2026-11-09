@@ -21,6 +21,9 @@ class ModelRequest:
     native_search: dict | None = field(default=None, repr=False)
     model: str | None = None
     options: dict = field(default_factory=dict, repr=False)
+    # Best-effort hint: adapters whose official API has a JSON-object mode enable it;
+    # others ignore it, so callers must still parse and validate the reply themselves.
+    json_output: bool = False
 
 
 @dataclass(frozen=True)

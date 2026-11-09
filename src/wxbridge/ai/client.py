@@ -19,12 +19,12 @@ class RoleRequest:
     def adapter(self):
         return self.lane.get_client().adapter
 
-    def request(self, messages, *, tools=None, tool_choice=None, native_search=None, deadline=None, require_complete=False):
+    def request(self, messages, *, tools=None, tool_choice=None, native_search=None, deadline=None, require_complete=False, json_output=False):
         self.job.check()
         before = len(self.metrics)
         options = json_value(self.cfg.options)
         try:
-            result = self.lane.get_client().generate(ModelRequest(messages, tools, tool_choice, native_search, model=self.cfg.model, options=options), deadline=min(deadline, self.job.deadline) if deadline else self.job.deadline, require_complete=require_complete)
+            result = self.lane.get_client().generate(ModelRequest(messages, tools, tool_choice, native_search, model=self.cfg.model, options=options, json_output=json_output), deadline=min(deadline, self.job.deadline) if deadline else self.job.deadline, require_complete=require_complete)
             self.job.check()
             return result
         finally:

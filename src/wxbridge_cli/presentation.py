@@ -140,7 +140,8 @@ def pages(snapshot, cfg, *, now=None):
         f'成员档案：{number(mem.get("members"))}    有可用摘要：{number(mem.get("members_with_memories"))}    修订：{number(mem.get("revision"))}',
         f'摘要：{number(mem.get("entries"))}    临时编号歧义隔离：{number(mem.get("ambiguous_entries"))}',
         f'记忆水位：{number(mem.get("watermark"))}    头像线索：{number(mem.get("initial_impressions"))}',
-        f'表达候选：{number(mem.get("learning_candidates"))}    已稳定：{number(mem.get("learning_stable"))}']
+        f'表达候选：{number(mem.get("learning_candidates"))}    已稳定：{number(mem.get("learning_stable"))}',
+        f'已驳回建议：成员更新 {number(mem.get("rejected_updates"))}    表达学习 {number(mem.get("rejected_learning"))}']
     recovery = mapping(s.get('memory_recovery'))
     if recovery:
         detail += [f'最近批次恢复：任务 {number(recovery.get("task_id"))} / {code(recovery.get("stage"))}',

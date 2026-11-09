@@ -148,7 +148,9 @@ class MemoryStore:
                     ambiguous_learning=sum(ambiguous_fields(r, ('context', 'meaning')) for r in expression_memory.active_records(self.data, now)),
                     initial_impressions=sum(p.get("initial_impression", {}).get("state") == "ready" for p in self.data["members"].values()),
                     learning_candidates=sum(r['state'] == 'candidate' for r in self.data.get('learning', {}).get('records', [])),
-                    learning_stable=sum(r['state'] == 'stable' for r in self.data.get('learning', {}).get('records', [])))
+                    learning_stable=sum(r['state'] == 'stable' for r in self.data.get('learning', {}).get('records', [])),
+                    rejected_updates=self.data.get('rejected_updates', 0),
+                    rejected_learning=self.data.get('rejected_learning', 0))
 
     def enable_learning(self, cursor, now, enabled=True):
         current = self.data.get('learning')
@@ -181,7 +183,11 @@ class MemoryStore:
                              dialogue=dialogue, use_learning=use_learning, question=question)
 
     def apply(self, proposal, snapshot, now):
-        """全量先校验再提交；来源必须是本窗口该成员的新直接发言。"""
+        """逐成员校验后提交；来源必须是本窗口该成员的新直接发言。
+
+        不合格的单个成员更新或表达学习条目会回滚并计入 rejected_*，其余结论照常提交；
+        整批没有任何可用结论时仍抛出首个错误，保留重试与隔离流程。
+        """
         if snapshot["identity"] != self.identity or snapshot["revision"] != self.data["revision"]:
             raise ValueError("memory_stale_revision")
         if snapshot["watermark"] != self.data["watermark"]:
@@ -226,13 +232,15 @@ class MemoryStore:
                     data['rejected_label_metadata']=data.get('rejected_label_metadata',0)+1
                     return unbound
             return result
-        for update in proposal["updates"]:
+        def apply_update(update):
+            """Apply one member's update to ``data``; return False for an allowed empty placeholder."""
             if (not isinstance(update, dict) or not {'member', 'memories', 'affinity'} <= set(update)
                     or set(update)-{'member', 'memories', 'affinity', 'relationship'}):
                 raise ValueError("memory_invalid_update")
             label = update["member"]
             if label not in mapping or label in seen:
                 raise ValueError("memory_unknown_member")
+            seen.add(label)
             if not any(m['member'] == label for m in evidence.values()):
                 # 模型可为只出现在旧对白中的成员返回空占位；它不产生记忆或关系变化。
                 def zero(value):
@@ -242,10 +250,8 @@ class MemoryStore:
                 if (update['memories'] == [] and zero(update['affinity'])
                         and (extra is None or (isinstance(extra, dict) and set(extra) == {'trust', 'mood'}
                                                and zero(extra['trust']) and extra['mood'] is None))):
-                    seen.add(label)
-                    continue
+                    return False
                 raise ValueError('memory_unknown_source')
-            seen.add(label)
             uid = mapping[label]
             person = data["members"].setdefault(uid, dict(nickname="", aliases=[], entries=[], affinity=50,
                 last_interaction=now, decay_anchor=now, daily={}, affinity_evidence=[]))
@@ -301,7 +307,69 @@ class MemoryStore:
                     mood=bound_change(relation['mood'],label,uid,('reason',))
                     relation['mood']=mood if mood is not unbound else None
             relationships.apply(person, relation, lambda ids: sources(ids, label), [], now)
+            return True
+        rejected, accepted = [], 0
+        def reject(exc):
+            rejected.append(str(exc) if re.fullmatch(r"memory_[a-z0-9_]{1,64}", str(exc)) else type(exc).__name__)
+        for update in proposal["updates"]:
+            # 每位成员独立校验并可回滚：一条不合格建议只丢弃该成员本批的模型结论，不连累其他成员。
+            label = update.get('member') if isinstance(update, dict) else None
+            uid = mapping.get(label) if isinstance(label, str) else None
+            before = copy.deepcopy(data["members"].get(uid)) if uid else None
+            try:
+                if apply_update(update):
+                    accepted += 1
+            except (ValueError, TypeError, KeyError) as exc:
+                reject(exc)
+                if uid and before is None:
+                    data["members"].pop(uid, None)
+                elif uid:
+                    data["members"][uid] = before
+                scored.discard(uid)
+        if rejected:
+            data['rejected_updates'] = data.get('rejected_updates', 0)+len(rejected)
         # 真实互动可更新昵称与互动时间，但拍一拍不属于发言证据，不参与记事/好感计分。
+        self._apply_interactions(data, snapshot, evidence, interactions, scored, now)
+        learned = self._apply_learning(data, proposal.get('learning', []), snapshot, now, reject)
+        if rejected and not accepted and not learned:
+            # 整批没有任何可用结论时保持原有失败、重试与隔离流程。
+            raise ValueError(rejected[0])
+        self._apply_avatars(data, proposal.get("avatar_updates", []), snapshot, now)
+        data["watermark"] = max(data["watermark"], snapshot["through"])
+        # 微信可能晚同步一条发送时间较早、local_id 却比触发大的消息。
+        # 记录水位之外已处理来源，既不重复计分，也不跳过较小 ID 的后续触发。
+        data["processed_ids"] = sorted(i for i in processed | {m["local_id"] for m in [*evidence.values(), *interactions]}
+                                       if i > data["watermark"])
+        data["revision"] += 1
+        self.persist(now, data=data)
+        return dict(rejected=rejected)
+
+    def _apply_learning(self, data, items, snapshot, now, reject):
+        """逐条提交表达学习；不合格条目回滚后丢弃，返回采纳条数。"""
+        if isinstance(items, list) and not items:
+            return 0
+        if not isinstance(items, list) or len(items) > 3:
+            reject(ValueError('memory_learning_limit'))
+            data['rejected_learning'] = data.get('rejected_learning', 0)+1
+            return 0
+        learned = 0
+        # 群内成熟记录先于其衍生的机器人偏好校验。
+        for item in sorted(items, key=lambda x: x.get('scope') == 'bot' if isinstance(x, dict) else False):
+            saved = copy.deepcopy(data.get('learning')), data.get('rejected_label_learning')
+            try:
+                expression_memory.apply(data, [item], snapshot, now)
+                learned += 1
+            except (ValueError, TypeError, KeyError) as exc:
+                reject(exc)
+                data['rejected_learning'] = data.get('rejected_learning', 0)+1
+                for key, value in zip(('learning', 'rejected_label_learning'), saved):
+                    if value is None:
+                        data.pop(key, None)
+                    else:
+                        data[key] = value
+        return learned
+
+    def _apply_interactions(self, data, snapshot, evidence, interactions, scored, now):
         for uid, member in snapshot["members"].items():
             own = [m for m in [*evidence.values(), *interactions] if m["member"] == member["label"]]
             if not own:
@@ -327,15 +395,6 @@ class MemoryStore:
                                         key=lambda e: (e["confidence"], e["confirmed_at"]), reverse=True)[:limit]
         for p in data["members"].values():
             p["entries"] = active_entries(p, now)
-        expression_memory.apply(data, proposal.get('learning', []), snapshot, now)
-        self._apply_avatars(data, proposal.get("avatar_updates", []), snapshot, now)
-        data["watermark"] = max(data["watermark"], snapshot["through"])
-        # 微信可能晚同步一条发送时间较早、local_id 却比触发大的消息。
-        # 记录水位之外已处理来源，既不重复计分，也不跳过较小 ID 的后续触发。
-        data["processed_ids"] = sorted(i for i in processed | {m["local_id"] for m in [*evidence.values(), *interactions]}
-                                       if i > data["watermark"])
-        data["revision"] += 1
-        self.persist(now, data=data)
 
     def _apply_avatars(self, data, updates, snapshot, now):
         bindings = snapshot.get("avatars", {})

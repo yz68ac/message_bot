@@ -66,8 +66,12 @@ class MemoryController:
                 if not result.get("ok"):
                     from wxbridge.app.tasks.policy import memory_failure_code
                     raise ValueError(memory_failure_code(result))
-                self.store.apply(result["proposal"], value, now)
+                outcome = self.store.apply(result["proposal"], value, now)
                 self.bot.journal.finish_memory(record["id"], now)
+                if outcome["rejected"]:
+                    # 只记录错误类别，不输出模型结论或记忆正文。
+                    self.bot.log.warning("记忆部分采纳 task=%s rejected=%s category=%s", record["id"],
+                                         len(outcome["rejected"]), ",".join(sorted(set(outcome["rejected"]))))
                 if record.get('learning_suppressed'):
                     with self.bot.journal.db:
                         self.bot.journal.set('memory_recovery', dict(task_id=record['id'], section='expression_learning',

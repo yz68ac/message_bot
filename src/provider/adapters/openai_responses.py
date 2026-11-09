@@ -73,6 +73,8 @@ class ResponsesAdapter(ChatCompletionsAdapter):
                 choice = dict(type='function', name=choice['function']['name'])
             elif choice not in ('auto', 'none', 'required'):raise ModelError('invalid_tool_choice')
             payload.update(tools=tools, tool_choice=choice)
+        if request.json_output and self.json_output_supported:
+            payload['text'] = dict(format=dict(type='json_object'))
         return payload
 
     @guard_conversion_errors('invalid_response')

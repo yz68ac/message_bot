@@ -199,7 +199,8 @@ class Client:
                 if isinstance(state, dict) and state.get('route') not in (None, route):
                     raise ModelError('continuation_provider_mismatch')
         result = self._request(messages, settings=settings, tools=request.tools, tool_choice=request.tool_choice,
-                               native_search=request.native_search, deadline=deadline, require_complete=require_complete)
+                               native_search=request.native_search, deadline=deadline, require_complete=require_complete,
+                               json_output=request.json_output is True)
         state = result.message.get('_provider_state')
         if isinstance(state, dict):state['route'] = route
         if result.message.get('tool_calls'):result.message['_provider_route'] = route
@@ -218,7 +219,7 @@ class Client:
                              native_search=native_search, require_complete=require_complete)
 
     def _request(self, messages, *, settings, tools=None, tool_choice=None, deadline=None, native_search=None,
-                 require_complete=False) -> ModelResult:
+                 require_complete=False, json_output=False) -> ModelResult:
         started, usage, finish, native_finish, error = time.monotonic(), {}, None, None, ''
         try:
             self._ensure_open()
@@ -231,7 +232,8 @@ class Client:
             if native_search is not None:
                 if settings.get('native_search_supported') is False or not getattr(self.adapter, 'native_search_supported', False):
                     raise ModelError('unsupported_native_search')
-            payload = self.adapter.build_payload(settings, ModelRequest(messages, tools, tool_choice, native_search))
+            payload = self.adapter.build_payload(settings, ModelRequest(messages, tools, tool_choice, native_search,
+                                                                        json_output=json_output))
             remaining = deadline-time.monotonic() if deadline is not None else timeout
             if remaining <= 0:
                 raise ModelError('deadline_exceeded', retryable=True)

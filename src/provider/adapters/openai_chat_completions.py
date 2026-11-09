@@ -8,6 +8,8 @@ from .base import ModelError, ModelRequest, ModelResult
 
 class ChatCompletionsAdapter:
     native_search_supported = False
+    # Official OpenAI/DeepSeek Chat Completions accept response_format=json_object.
+    json_output_supported = True
 
     def build_payload(self, settings, request: ModelRequest):
         if request.native_search is not None:
@@ -23,6 +25,8 @@ class ChatCompletionsAdapter:
             payload['reasoning_effort'] = settings['reasoning_effort']
         if request.tools:
             payload.update(tools=deepcopy(request.tools), tool_choice=deepcopy(request.tool_choice or 'auto'))
+        if request.json_output and self.json_output_supported:
+            payload['response_format'] = {'type': 'json_object'}
         return payload
 
     def parse_response(self, response):
@@ -49,3 +53,8 @@ class ChatCompletionsAdapter:
         # never used as reply text or copied into telemetry.
         return {'role': 'assistant', **deepcopy({k: message[k] for k in
                 ('content', 'tool_calls', 'reasoning_content') if k in message})}
+
+
+class CompatibleChatCompletionsAdapter(ChatCompletionsAdapter):
+    """Third-party OpenAI-compatible endpoints differ in which optional fields they accept."""
+    json_output_supported = False
