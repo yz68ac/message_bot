@@ -22,7 +22,31 @@ def reply_rules(cfg=None):
                          '需要解释或展示表情码本身时，用引号或代码标记保留原文。')
         if style.omit_trailing_period:
             rules.append('省略回复正文末尾的单个句号；保留省略号、代码、引用和链接原文。')
+        if style.tone == 'casual':
+            rules.append(casual_rules(style.max_messages))
     return ''.join(rules)
+
+
+def casual_rules(max_messages):
+    """Chat-style output: short and spoken, split like a person sending several messages."""
+    split = ('不要分段，一条消息说完。' if max_messages <= 1 else
+             f'一个意思一条消息，消息之间用一个空行分隔，最多{max_messages}条。')
+    return ('像微信里熟悉的朋友那样说话：口语化、短句，直接回应，不寒暄、不复述对方的问题、不自我介绍。'
+            '不用“首先/其次/总之/希望对你有帮助”这类书面套话，不加标题、列表或加粗。'
+            '简单问题一两句话答完，不主动扩展；对方需要代码、步骤或详细说明时照常完整给出。'
+            + split)
+
+
+TRAILING_PERIOD = re.compile(r'(?<![.。])[.。](?=[ \t]*$)')
+
+
+def without_trailing_period(text):
+    """Drop one closing period from a plain prose message; a closing link keeps its exact text."""
+    lines = text.rstrip().split('\n')
+    if re.search(r'https?://\S+$', lines[-1]):
+        return text
+    lines[-1] = TRAILING_PERIOD.sub('', lines[-1])
+    return '\n'.join(lines)
 
 
 def response_prompt(messages, cfg=None):
@@ -122,5 +146,5 @@ def format_reply(text, cfg=None):
         return plain_text(text)
     style = cfg.reply_style
     emoticons = None if style.wechat_emoticons_enabled else lambda line: re.sub(token_pattern(), '', line)
-    period = (lambda line: re.sub(r'(?<![.。])[.。](?=[ \t]*$)', '', line)) if style.omit_trailing_period else None
+    period = (lambda line: TRAILING_PERIOD.sub('', line)) if style.omit_trailing_period else None
     return plain_text(text, prose_transform=emoticons, final_transform=period)

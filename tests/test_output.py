@@ -109,3 +109,45 @@ class ReplyStyleTests(unittest.TestCase):
         chunks = reply_chunks('abcdefghij', 4)
         self.assertEqual(chunks, ['abcd', 'efgh', 'ij'])
         self.assertEqual(''.join(chunks), 'abcdefghij')
+
+
+class ConversationalReplyTests(unittest.TestCase):
+    PARTS = ['刚看了一下，是端口没对上的问题', '改成 8730 再试试', '还不行就把日志发我看看']
+
+    def config(self, **style):
+        return replace(InstanceConfig(), reply_style=ReplyStyleConfig(**style))
+
+    def test_defaults_keep_the_assistant_tone_and_two_message_split(self):
+        cfg = InstanceConfig()
+        self.assertEqual((cfg.reply_style.tone, cfg.reply_style.max_messages), ('assistant', 2))
+        self.assertNotIn('口语化', reply_rules(cfg))
+        # Three paragraphs stayed one message before; the default keeps that.
+        text = '\n\n'.join(self.PARTS)
+        self.assertEqual(reply_chunks(text, 1800), [text])
+
+    def test_casual_tone_adds_chat_rules_with_the_message_limit(self):
+        rules = reply_rules(self.config(tone='casual', max_messages=3))
+        self.assertIn('口语化', rules)
+        self.assertIn('最多3条', rules)
+        self.assertIn('不要分段', reply_rules(self.config(tone='casual', max_messages=1)))
+
+    def test_paragraphs_up_to_the_limit_become_separate_messages(self):
+        text = '\n\n'.join(self.PARTS)
+        self.assertEqual(reply_chunks(text, 1800, 3), self.PARTS)
+        self.assertEqual(reply_chunks(text, 1800, 5), self.PARTS)
+        self.assertEqual(reply_chunks(text, 1800, 1), [text])
+
+    def test_finish_trims_each_split_message_but_not_a_single_or_code_reply(self):
+        from wxbridge.ai.reply.output import without_trailing_period
+        text = '刚看了一下，是端口没对上。\n\n改成 8730 再试试。\n\n地址 https://example.com/a.'
+        self.assertEqual(reply_chunks(text, 1800, 3, without_trailing_period),
+                         ['刚看了一下，是端口没对上', '改成 8730 再试试', '地址 https://example.com/a.'])
+        self.assertEqual(reply_chunks('好的。', 1800, 3, without_trailing_period), ['好的。'])
+        code = 'def a():\n    return 1\n\ndef b():\n    return 2.'
+        self.assertEqual(reply_chunks(code, 1800, 3, without_trailing_period), [code])
+
+    def test_invalid_style_values_are_rejected(self):
+        from wxbridge.config.models import ConfigError
+        for style in (dict(tone='poetic'), dict(max_messages=0), dict(max_messages=6)):
+            with self.subTest(style=style), self.assertRaises(ConfigError):
+                ReplyStyleConfig(**style).validate('reply_style')

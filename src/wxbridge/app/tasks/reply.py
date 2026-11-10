@@ -5,7 +5,7 @@ import time
 
 from wxbridge.ai.context.selection import read_context, source_anchor
 from wxbridge.ai.context.identity import member_labels
-from wxbridge.ai.reply.output import format_reply
+from wxbridge.ai.reply.output import format_reply, without_trailing_period
 from wxbridge.ai.reply.prompt import build_prompt
 from wxbridge.ai.roles import model_settings
 from wxbridge.app.tasks.policy import GenerationFailure
@@ -47,7 +47,7 @@ class ReplyController:
             del self.jobs[task_id]
             reply = result.get("reply") or ""
             error = "generation:" + GenerationFailure.from_result(result).code if not result["ok"] else ""
-            chunks = reply_chunks(reply, int(self.bot.cfg.target.max_reply_chars)) if not error else []
+            chunks = self._chunks(reply) if not error else []
             if error:
                 self._failed(task_id, version, result)
             else:
@@ -60,7 +60,7 @@ class ReplyController:
                 # system notice only when it wrote nothing, so one message is sent.
                 if proposal is not None and not chunks:
                     notice = '在改了，稍后发给你' if proposal.source_image else '在画了，稍后发给你'
-                    chunks.extend(reply_chunks(notice, int(self.bot.cfg.target.max_reply_chars)))
+                    chunks.extend(self._chunks(notice))
                 accepted = False
                 try:
                     accepted = self.bot.journal.generated(task_id, version, chunks, vision=result.get('vision'),
@@ -71,6 +71,11 @@ class ReplyController:
                     continue
                 self.bot.log.info("生成结束 task=%s version=%s chunks=%s images=%s error=%s", task_id, version,
                          len(chunks), (result.get("vision") or {}).get("images", 0), error or "none")
+
+    def _chunks(self, text):
+        style = self.bot.cfg.reply_style
+        return reply_chunks(text, int(self.bot.cfg.target.max_reply_chars), style.max_messages,
+                            without_trailing_period if style.omit_trailing_period else None)
 
     def start(self, *, max_new=None):
         started = 0

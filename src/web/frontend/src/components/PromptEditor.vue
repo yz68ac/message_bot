@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { ChatDotRound } from "@element-plus/icons-vue";
 import { api } from "../api";
+import { promptTemplates, type PromptTemplate } from "../promptTemplates";
 const props = defineProps<{instances: any[]}>();
 const emit = defineEmits<{saved: []; error: [error: any]}>();
 const instances = computed(() => props.instances);
@@ -100,6 +101,20 @@ async function restorePrompt(id: string) {
     if (e !== "cancel" && e !== "close") fail(e);
   }
 }
+async function useTemplate(template: PromptTemplate) {
+  if (promptText.value.trim() && promptText.value !== template.text) {
+    try {
+      await ElMessageBox.confirm(
+        `用“${template.name}”模板替换编辑框中的内容？保存前不会生效，可点“对比改动”查看。`,
+        "使用模板",
+        { confirmButtonText: "替换", cancelButtonText: "取消", type: "info" },
+      );
+    } catch {
+      return;
+    }
+  }
+  promptText.value = template.text;
+}
 async function reload(id: string) {
   if (id === promptId.value && !promptDirty.value) await selectPrompt(id);
 }
@@ -159,7 +174,16 @@ defineExpose({canLeave: discardPrompt, reload, dirty: promptDirty});
                   <span>UTF-8 · 纯文本</span></small
                 >
                 <div>
-                  <el-button
+                  <el-dropdown trigger="click" @command="useTemplate">
+                    <el-button>使用模板</el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-for="item in promptTemplates" :key="item.id" :command="item">
+                          <b>{{ item.name }}</b>&nbsp;<small class="template-hint">{{ item.description }}</small>
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown><el-button
                     :disabled="!promptDirty"
                     @click="compareOpen = true"
                     >对比改动</el-button
@@ -214,3 +238,8 @@ defineExpose({canLeave: discardPrompt, reload, dirty: promptDirty});
     ></el-dialog
   >
 </template>
+
+<style scoped>
+.editor-footer .el-dropdown { margin-right: 12px; vertical-align: middle; }
+.template-hint { color: var(--ui-muted); }
+</style>
