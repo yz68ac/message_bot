@@ -1,33 +1,35 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
-import { ArrowRight, ChatDotRound, CircleCheck, Connection, Iphone, Refresh } from '@element-plus/icons-vue';
+import { ArrowRight, ArrowDown, ChatDotRound, CircleCheck, Connection, Iphone, Key, Loading, Refresh, VideoPlay } from '@element-plus/icons-vue';
 import { api } from '../api';
+import { LOGGED_IN, setupState, type StepId } from '../setupModel';
+import { runServiceAction, runningOperation } from '../serviceActions';
 
-const props = defineProps<{ snapshot: any }>();
-const emit = defineEmits<{ navigate: [page: string]; refresh: []; error: [error: any] }>();
-const dialog = ref(false), login = ref<any>(null), loginBusy = ref(false), binding = ref(false);
-const loginError = ref(''), bindingError = ref('');
-const setup = computed(() => props.snapshot?.account_setup || {});
+const props = defineProps<{ snapshot: any; catalog: any }>();
+const emit = defineEmits<{ navigate: [page: string]; create: []; refresh: []; reloadModels: []; error: [error: any] }>();
+const dialog = ref(false), login = ref<any>(null), loginBusy = ref(false), submitting = ref(false);
+const loginError = ref(''), expanded = ref(false);
 const phase = computed(() => login.value?.phase || props.snapshot?.runtime?.login_phase || 'unknown');
-const loggedIn = computed(() => ['logged_in', 'setup_required'].includes(phase.value));
-const count = computed(() => setup.value.instance_count || 0);
-const pending = computed<string[]>(() => setup.value.pending_instances || []);
-const authorized = computed(() => setup.value.bound && count.value > 0 && pending.value.length === 0);
-const canBind = computed(() => setup.value.can_bind && loggedIn.value && !binding.value);
+const loggedIn = computed(() => LOGGED_IN.includes(phase.value));
+const state = computed(() => setupState(props.snapshot, props.catalog, login.value?.phase));
+const operation = computed(() => runningOperation(props.snapshot));
+const busy = computed(() => submitting.value || !!operation.value);
+const count = computed(() => props.snapshot?.instances?.length || 0);
+const canControl = computed(() => !!props.snapshot?.capabilities?.service_control);
+const icons: Record<StepId, any> = { keys: Key, login: Iphone, instances: ChatDotRound, launch: VideoPlay };
 const labels: Record<string, string> = {
-  logged_in: '微信已登录', setup_required: '微信已登录，等待绑定', qr_required: '等待扫码',
+  logged_in: '微信已登录', setup_required: '微信已登录，等待连接', qr_required: '等待扫码',
   qr_expired: '二维码已过期', phone_confirmation: '等待手机确认', confirmation_pending: '等待手机确认',
   login_ready: '正在准备登录', open_ready: '正在进入微信', opening_wechat: '正在进入微信',
   client_stopped: '微信尚未运行', waiting_manual: '需要在微信端确认', completed: '正在核对登录状态',
   waiting: '正在连接微信', unknown: '等待获取登录状态',
 };
 const phaseLabel = computed(() => labels[phase.value] || '正在核对登录状态');
-const bindingHint = computed(() => !loggedIn.value ? '先完成微信登录，再绑定账号和会话。'
-  : !setup.value.can_bind ? '账号服务正在运行或排空，请先到服务管理停止机器人。'
-  : !count.value ? '可以先绑定账号，再创建会话实例。'
-  : pending.value.length ? `${pending.value.join('、')} 尚未获得发送授权。`
-  : '账号和当前实例的会话授权已配置，可前往服务管理。');
+const summary = computed(() => {
+  const done = state.value.steps.filter((step) => step.done).length;
+  return state.value.next ? `已完成 ${done}/4 步` : `一切就绪 · ${count.value} 个实例已授权，机器人运行中`;
+});
+
 let timer: ReturnType<typeof setTimeout> | undefined;
 let generation = 0, failures = 0, disposed = false;
 function stopPolling() { generation++; if (timer) clearTimeout(timer); timer = undefined; }
@@ -46,7 +48,7 @@ async function fetchLogin() {
     if (current !== generation) return;
     login.value = result;
     loginError.value = ''; failures = 0;
-    if (['logged_in', 'setup_required'].includes(result.phase)) emit('refresh');
+    if (LOGGED_IN.includes(result.phase)) emit('refresh');
     else schedule();
   } catch (e: any) {
     if (current !== generation) return;
@@ -66,23 +68,16 @@ watch(dialog, (open) => {
   if (open) void fetchLogin();
 });
 onBeforeUnmount(() => { disposed = true; stopPolling(); });
-async function bindAccount() {
-  if (!canBind.value) return;
+
+async function run(action: 'authorize' | 'authorize_start' | 'start') {
+  submitting.value = true;
   try {
-    await ElMessageBox.confirm(count.value
-      ? `核对当前微信账号，并为 ${count.value} 个实例配置会话发送授权。请确认当前账号拥有这些群或联系人。实例不会自动启用，机器人不会自动启动。`
-      : '将当前登录的微信账号绑定到此运行环境，机器人保持停止。', '绑定账号与会话',
-      { confirmButtonText: '确认绑定', cancelButtonText: '取消', type: 'info' });
-  } catch { return; }
-  binding.value = true; bindingError.value = '';
-  try {
-    const result = await api('/account/bind', { method: 'POST', body: '{}' });
-    ElMessage.success(result.message);
-    emit('refresh');
-  } catch (e: any) {
-    bindingError.value = e.message;
-    if (e.status === 401) emit('error', e);
-  } finally { binding.value = false; }
+    if (await runServiceAction(action, count.value, (e) => emit('error', e))) emit('refresh');
+  } finally { submitting.value = false; }
+}
+async function connectAccount() {
+  dialog.value = false;
+  await run('authorize');
 }
 </script>
 
@@ -91,37 +86,59 @@ async function bindAccount() {
     <div class="setup-heading">
       <div class="setup-title">
         <span class="setup-symbol"><el-icon><ChatDotRound /></el-icon></span>
-        <div><h3 id="account-setup-title">微信账号</h3><p>管理登录状态、会话实例与发送授权。</p></div>
+        <div><h3 id="account-setup-title">{{ state.next ? '开始使用' : '微信账号' }}</h3><p>{{ summary }}</p></div>
       </div>
-      <span :class="['setup-status', { ready: loggedIn }]" role="status"><i></i>{{ phaseLabel }}</span>
+      <div class="setup-heading-actions">
+        <span :class="['setup-status', { ready: loggedIn }]" role="status"><i></i>{{ phaseLabel }}</span>
+        <el-button v-if="!state.next" text size="small" :aria-expanded="expanded" @click="expanded = !expanded">
+          {{ expanded ? '收起' : '查看步骤' }}<el-icon :class="['fold-icon', { open: expanded }]"><ArrowDown /></el-icon>
+        </el-button>
+      </div>
     </div>
-    <div class="setup-steps">
-      <article :class="['setup-step', { complete: loggedIn }]">
-        <div class="step-kicker"><span class="step-number"><el-icon v-if="loggedIn"><CircleCheck /></el-icon><template v-else>01</template></span><span>微信登录</span></div>
-        <h4>{{ loggedIn ? '账号已连接' : '扫码连接微信' }}</h4>
-        <p>{{ loggedIn ? '微信会话已就绪，登录状态保留在当前账号目录。' : '使用手机微信扫码，并在手机上确认登录。' }}</p>
-        <el-button :icon="loggedIn ? Refresh : Iphone" @click="openLogin">{{ loggedIn ? '检查登录状态' : '打开登录二维码' }}</el-button>
-      </article>
-      <article :class="['setup-step', { complete: count > 0 }]">
-        <div class="step-kicker"><span class="step-number"><el-icon v-if="count"><CircleCheck /></el-icon><template v-else>02</template></span><span>会话实例</span></div>
-        <h4>{{ count ? `已配置 ${count} 个实例` : '为会话配置机器人' }}</h4>
-        <p>{{ count ? `${snapshot.instances.filter((i: any) => i.enabled).length} 个已启用。每个实例独立设置模型、提示词和记忆。` : '选择群聊或联系人，配置回复模型和提示词。' }}</p>
-        <el-button :icon="ChatDotRound" @click="emit('navigate', 'instances')">{{ count ? '管理会话实例' : '创建会话实例' }}</el-button>
-      </article>
-      <article :class="['setup-step', { complete: authorized }]">
-        <div class="step-kicker"><span class="step-number"><el-icon v-if="authorized"><CircleCheck /></el-icon><template v-else>03</template></span><span>账号与授权</span></div>
-        <h4>{{ authorized ? '会话授权已就绪' : !setup.bound ? '绑定当前账号' : `还有 ${pending.length} 个实例待授权` }}</h4>
-        <p>{{ bindingHint }}</p>
-        <el-button :type="authorized ? 'default' : 'primary'" :icon="Connection" :disabled="!canBind" :loading="binding" @click="bindAccount">{{ authorized ? '重新核对授权' : '绑定账号与会话' }}</el-button>
-      </article>
+
+    <div v-if="operation" class="setup-progress" role="status">
+      <el-icon class="is-loading"><Loading /></el-icon><span>{{ operation.message }}</span>
     </div>
-    <el-alert v-if="bindingError" :title="bindingError" type="error" show-icon :closable="false" />
-    <div class="setup-footer"><span>新增或更换实例会话后，需要重新核对授权。</span><button class="text-link" @click="emit('navigate', 'services')">{{ setup.can_bind ? '前往服务管理' : '管理账号服务' }}<el-icon><ArrowRight /></el-icon></button></div>
+
+    <ol v-if="state.next || expanded" class="setup-steps">
+      <li v-for="(step, index) in state.steps" :key="step.id"
+          :class="['setup-step', { complete: step.done, current: state.next === step.id }]">
+        <div class="step-kicker">
+          <span class="step-number"><el-icon v-if="step.done"><CircleCheck /></el-icon><template v-else>{{ index + 1 }}</template></span>
+          <el-icon class="step-icon"><component :is="icons[step.id]" /></el-icon>
+        </div>
+        <h4>{{ step.title }}</h4>
+        <p>{{ step.detail }}</p>
+        <div class="step-actions">
+          <template v-if="step.id === 'keys'">
+            <el-button v-if="!step.done" :type="state.next === 'keys' ? 'primary' : 'default'" :icon="Refresh" @click="emit('reloadModels')">我已填写，重新检测</el-button>
+          </template>
+          <template v-else-if="step.id === 'login'">
+            <el-button v-if="!state.loggedIn" :type="state.next === 'login' ? 'primary' : 'default'" :icon="Iphone" @click="openLogin">打开登录二维码</el-button>
+            <el-button v-else-if="!state.bound" :type="state.next === 'login' ? 'primary' : 'default'" :icon="Connection"
+              :disabled="busy || !canControl" :loading="submitting" @click="connectAccount">连接账号</el-button>
+            <el-button v-else :icon="Refresh" @click="openLogin">检查登录状态</el-button>
+          </template>
+          <template v-else-if="step.id === 'instances'">
+            <el-button :type="state.next === 'instances' ? 'primary' : 'default'" :icon="ChatDotRound"
+              @click="count ? emit('navigate', 'instances') : emit('create')">{{ count ? '管理会话实例' : '创建会话实例' }}</el-button>
+          </template>
+          <template v-else>
+            <el-button v-if="state.launch" :type="state.next === 'launch' ? 'primary' : 'default'" :icon="VideoPlay"
+              :disabled="busy || !canControl || !state.loggedIn" :loading="submitting" @click="run(state.launch!)">
+              {{ state.launch === 'start' ? '启动机器人' : state.launch === 'authorize' ? '授权并重启机器人' : '授权并启动机器人' }}</el-button>
+            <el-button v-else-if="step.done" :icon="ArrowRight" @click="emit('navigate', 'services')">服务管理</el-button>
+          </template>
+        </div>
+      </li>
+    </ol>
+    <div v-if="state.next || expanded" class="setup-footer"><span>新增实例后回到这里一键授权；机器人运行时会短暂重启。</span></div>
   </section>
 
   <el-dialog v-model="dialog" title="连接微信" width="min(440px, calc(100vw - 32px))" align-center class="account-login-dialog" :close-on-click-modal="false" @closed="!dialog && (login = null)">
     <div class="login-viewer" aria-live="polite">
-      <div v-if="loggedIn && !loginBusy && login" class="login-success"><el-icon><CircleCheck /></el-icon><h3>微信登录成功</h3><p>可以继续配置实例并绑定账号。</p></div>
+      <div v-if="loggedIn && !loginBusy && login" class="login-success"><el-icon><CircleCheck /></el-icon><h3>微信登录成功</h3>
+        <p>{{ state.bound ? '账号已连接，可以继续配置实例。' : '下一步：连接账号，之后即可搜索联系人和群聊。' }}</p></div>
       <template v-else>
         <div class="qr-frame" v-loading="loginBusy && !login?.qr">
           <img v-if="login?.qr && !loginError" :src="login.qr" alt="使用手机微信扫描此二维码登录" />
@@ -132,33 +149,41 @@ async function bindAccount() {
       </template>
       <el-alert v-if="loginError" :title="loginError" type="warning" show-icon :closable="false" />
     </div>
-    <template #footer><el-button @click="dialog = false">{{ loggedIn ? '完成' : '稍后登录' }}</el-button><el-button :icon="Refresh" :loading="loginBusy" @click="retryLogin">刷新状态</el-button></template>
+    <template #footer>
+      <el-button @click="dialog = false">{{ loggedIn ? '关闭' : '稍后登录' }}</el-button>
+      <el-button v-if="loggedIn && !state.bound" type="primary" :icon="Connection" :disabled="busy || !canControl" @click="connectAccount">连接账号</el-button>
+      <el-button v-else :icon="Refresh" :loading="loginBusy" @click="retryLogin">刷新状态</el-button>
+    </template>
   </el-dialog>
 </template>
 
 <style scoped>
 .account-setup { margin-bottom: 20px; padding: 24px; border: 1px solid var(--ui-border); border-radius: 12px; background: var(--ui-surface); box-shadow: var(--ui-shadow); }
-.setup-heading,.setup-title,.setup-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.setup-title { justify-content: flex-start; }
+.setup-heading,.setup-title,.setup-footer,.setup-heading-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.setup-title,.setup-heading-actions { justify-content: flex-start; }
+.setup-heading-actions { gap: 8px; }
 .setup-title h3 { font-size: 18px; font-weight: 650; letter-spacing: .3px; }
 .setup-title p { margin-top: 5px; font-size: 13px; color: var(--ui-muted); }
 .setup-symbol { display: grid; place-items: center; flex: 0 0 44px; height: 44px; border-radius: 12px; background: var(--ui-accent-soft); color: var(--ui-accent); font-size: 24px; }
 .setup-status { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; background: var(--ui-warning-soft); border: 1px solid var(--ui-warning-border); border-radius: 20px; color: #b45309; font-size: 12px; white-space: nowrap; }
 .setup-status i { width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
 .setup-status.ready { color: #059669; background: var(--ui-success-soft); border-color: var(--ui-success-border); }
-.setup-steps { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; margin: 22px 0 18px; border: 1px solid var(--ui-border); border-radius: 12px; overflow: hidden; }
+.fold-icon { margin-left: 4px; transition: transform .15s ease; }
+.fold-icon.open { transform: rotate(180deg); }
+.setup-progress { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 11px 14px; border: 1px solid var(--ui-accent-border); border-radius: 10px; background: var(--ui-accent-soft); color: var(--ui-accent); font-size: 13px; }
+.setup-steps { list-style: none; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; margin: 22px 0 18px; padding: 0; border: 1px solid var(--ui-border); border-radius: 12px; overflow: hidden; }
 .setup-step { padding: 19px 20px; min-width: 0; border-right: 1px solid var(--ui-border); background: var(--ui-surface); transition: background .15s ease; display: flex; flex-direction: column; align-items: flex-start; }
 .setup-step:last-child { border-right: 0; }
-
+.setup-step.current { background: var(--ui-accent-soft); box-shadow: inset 0 3px 0 var(--ui-accent); }
 .step-kicker { display: flex; align-items: center; gap: 8px; color: var(--ui-muted); font-size: 12px; }
-.step-number { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--ui-border); border-radius: 50%; font-size: 10px; font-weight: 600; }
+.step-icon { font-size: 16px; }
+.step-number { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--ui-border); border-radius: 50%; font-size: 11px; font-weight: 600; background: var(--ui-surface); }
+.current .step-number { color: var(--ui-accent); border-color: var(--ui-accent); }
 .complete .step-number { color: #059669; background: var(--ui-success-soft); border-color: var(--ui-success-border); font-size: 17px; }
-.setup-step.complete { background: linear-gradient(180deg, var(--ui-surface-hover), var(--ui-surface)); }
 .setup-step h4 { margin: 13px 0 7px; font-size: 15px; font-weight: 600; }
 .setup-step p { color: var(--ui-secondary); font-size: 13px; line-height: 1.65; margin-bottom: 16px; overflow-wrap: anywhere; }
-.setup-step .el-button { margin-top: auto; }
+.step-actions { margin-top: auto; }
 .setup-footer { color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
-.account-setup > .el-alert { margin-bottom: 15px; }
 .login-viewer { text-align: center; }
 .qr-frame { width: 248px; height: 248px; margin: 4px auto 22px; padding: 12px; background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: 12px; box-shadow: var(--ui-shadow-sm); }
 .qr-frame img { width: 100%; height: 100%; object-fit: contain; }
@@ -168,6 +193,7 @@ async function bindAccount() {
 .login-viewer p { margin: 10px 10px 20px; color: var(--ui-muted); line-height: 1.8; font-size: 13px; }
 .login-success { padding: 25px 0 10px; }
 .login-success > .el-icon { color: var(--ui-success); font-size: 64px; margin-bottom: 20px; }
+@media (max-width: 1150px) { .setup-steps { grid-template-columns: repeat(2,minmax(0,1fr)); } .setup-step:nth-child(2) { border-right: 0; } .setup-step:nth-child(-n+2) { border-bottom: 1px solid var(--ui-border); } }
 @media (max-width: 900px) { .account-setup { padding: 18px; } .setup-step { padding: 16px; } }
 @media (max-width: 640px) { .setup-heading { align-items: flex-start; flex-direction: column; } .setup-steps { grid-template-columns: 1fr; margin-top: 18px; } .setup-step { border-right: 0; border-bottom: 1px solid var(--ui-border); } .setup-step:last-child { border-bottom: 0; } .setup-step p { margin-bottom: 14px; } .setup-footer { align-items: flex-start; flex-direction: column; gap: 10px; } }
 </style>

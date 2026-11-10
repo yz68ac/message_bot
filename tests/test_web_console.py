@@ -419,3 +419,115 @@ class ServiceTests(unittest.TestCase):
         with patch('web.backend.services.os.name','posix'),patch('web.backend.services.request',return_value=dict(components={})):
             service.status()
         self.assertEqual(service.status_error,'')
+
+
+class FakeAuthorizeServices:
+    """Records control calls; the bot stops after `drain_polls` status reads."""
+    allow_control = True
+
+    def __init__(self, *, running, drain_polls=1, bind_errors=()):
+        self.running, self.drain_polls, self.bind_errors = running, drain_polls, list(bind_errors)
+        self.calls, self.stopping = [], False
+
+    def status(self):
+        if self.stopping:
+            self.drain_polls -= 1
+            if self.drain_polls <= 0:
+                self.running, self.stopping = False, False
+        state = 'active' if self.running else 'inactive'
+        return {BOT: dict(state=state, pid=1), RECOVERY: dict(state=state, enabled=self.running or self.stopping)}
+
+    def perform(self, action):
+        self.calls.append(action)
+        if action == 'stop':
+            self.stopping = True
+        elif action == 'start':
+            self.running = True
+        return dict(applied=True, message=action)
+
+    def onboarding(self, action):
+        self.calls.append('bind')
+        if self.running:
+            raise AssertionError('bound while the bot was running')
+        if self.bind_errors:
+            raise self.bind_errors.pop(0)
+        return dict(bound=True, authorized_count=2)
+
+
+class AuthorizeOperationTests(unittest.TestCase):
+    def run_operation(self, services, action='authorize'):
+        repository = MagicMock()
+        operations = Operations(services, repository)
+        operations.poll_interval = 0
+        self.addCleanup(operations.close)
+        item = operations.submit(action)
+        operations.executor.shutdown(wait=True)
+        return repository, operations.snapshot()[0] | {'id': item['id']}
+
+    def test_running_bot_is_stopped_bound_and_restarted(self):
+        services = FakeAuthorizeServices(running=True, drain_polls=3)
+        repository, item = self.run_operation(services)
+        self.assertEqual(services.calls, ['stop', 'bind', 'start'])
+        self.assertEqual(item['state'], 'done')
+        self.assertIn('已授权 2 个实例会话', item['message'])
+        self.assertTrue(item['restarted'])
+        repository.validate_start.assert_called_once()
+
+    def test_stopped_bot_is_bound_and_stays_stopped(self):
+        services = FakeAuthorizeServices(running=False)
+        repository, item = self.run_operation(services)
+        self.assertEqual(services.calls, ['bind'])
+        self.assertIn('保持停止', item['message'])
+        self.assertFalse(item['restarted'])
+        repository.validate_start.assert_not_called()
+
+    def test_authorize_start_starts_a_stopped_bot_after_binding(self):
+        services = FakeAuthorizeServices(running=False)
+        repository, item = self.run_operation(services, 'authorize_start')
+        self.assertEqual(services.calls, ['bind', 'start'])
+        repository.validate_start.assert_called_once()
+
+    def test_transient_helper_restart_is_retried(self):
+        busy = ManagementError('onboarding_not_ready', '微信尚未就绪。', 409)
+        services = FakeAuthorizeServices(running=False, bind_errors=[busy])
+        _, item = self.run_operation(services)
+        self.assertEqual(services.calls, ['bind', 'bind'])
+        self.assertEqual(item['state'], 'done')
+
+    def test_bind_failure_leaves_the_bot_stopped_and_says_so(self):
+        denied = ManagementError('onboarding_disabled', '账号核对失败。', 403)
+        services = FakeAuthorizeServices(running=True, bind_errors=[denied])
+        _, item = self.run_operation(services)
+        self.assertEqual(services.calls, ['stop', 'bind'])
+        self.assertEqual(item['state'], 'error')
+        self.assertIn('机器人已停止', item['message'])
+        self.assertFalse(services.running)
+
+    def test_stop_timeout_does_not_bind(self):
+        services = FakeAuthorizeServices(running=True, drain_polls=10**9)
+        repository = MagicMock()
+        operations = Operations(services, repository)
+        operations.poll_interval, operations.drain_timeout = 0, 0.05
+        self.addCleanup(operations.close)
+        operations.submit('authorize')
+        operations.executor.shutdown(wait=True)
+        item = operations.snapshot()[0]
+        self.assertEqual(item['code'], 'authorize_stop_timeout')
+        self.assertNotIn('bind', services.calls)
+
+    def test_demo_services_support_authorize(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        seed(root)
+        services = DemoServices(root)
+        services.perform('start')
+        repository = ConfigRepository(root)
+        operations = Operations(services, repository)
+        operations.poll_interval = 0
+        self.addCleanup(operations.close)
+        operations.submit('authorize')
+        operations.executor.shutdown(wait=True)
+        item = operations.snapshot()[0]
+        self.assertEqual(item['state'], 'done', item)
+        self.assertTrue(services.active)

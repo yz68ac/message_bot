@@ -23,6 +23,8 @@ import AccountSetup from "./components/AccountSetup.vue";
 import AccountSettings from "./components/AccountSettings.vue";
 import LogViewer from "./components/LogViewer.vue";
 import { entryTime, levelLabel, levelTag, sourceLabel, type LogFilter } from "./logModel";
+import { authorizeAction } from "./setupModel";
+import { runServiceAction, runningOperation, type ServiceAction } from "./serviceActions";
 
 const componentLabel: Record<string, string> = { bot: "机器人", wechat: "微信会话", sender: "发送组件", recovery: "自动恢复", web: "管理台" };
 const channelLabel: Record<string, string> = { reply: "回复", image: "图片", background: "后台" };
@@ -241,31 +243,13 @@ async function navigate(id: string) {
   if (accountSettings.value && !(await accountSettings.value.canLeave())) return;
   page.value = id;
 }
-async function action(kind: "start" | "stop" | "apply") {
-  const copy = {
-    start: ["启动机器人", "将加载已保存的配置，开始监听并恢复自动恢复。"],
-    stop: [
-      "停止机器人",
-      "将停止机器人及自动恢复。微信登录会话保留，未完成队列由机器人关闭流程保存。",
-    ],
-    apply: [
-      "应用全部配置",
-      "所有运行实例会随账号服务受控重启。也可在实例页单独应用某个实例。账号服务已停止时，不会自动启动。",
-    ],
-  };
-  try {
-    await ElMessageBox.confirm(copy[kind][1], copy[kind][0], {
-      confirmButtonText: "确认操作",
-      cancelButtonText: "取消",
-      type: kind === "stop" ? "warning" : "info",
-    });
-    await api(`/services/${kind}`, { method: "POST", body: "{}" });
-    ElMessage.success("操作已提交，可在服务管理中查看结果。");
-    await refresh();
-  } catch (e: any) {
-    if (e !== "cancel" && e !== "close") fail(e);
-  }
+async function action(kind: ServiceAction) {
+  if (await runServiceAction(kind, instances.value.length, fail)) await refresh();
 }
+const pendingAuthorization = computed<string[]>(() => snapshot.value?.account_setup?.pending_instances || []);
+const activeOperation = computed(() => runningOperation(snapshot.value));
+const authorizeLabel = computed(() =>
+  authorizeAction(snapshot.value) === "authorize" ? "授权并重启机器人" : "授权并启动机器人");
 function beforeUnload(event: BeforeUnloadEvent) {
   if (promptEditor.value?.dirty || accountSettings.value?.dirty) {
     event.preventDefault();
@@ -332,7 +316,10 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
           ></el-button>
         </form>
         <small v-if="demo">演示口令：wxbridge-demo-local</small
-        ><small v-else>口令与模型 API 密钥独立，由服务器管理员设置。</small>
+        ><small v-else
+          >初始口令保存在部署目录的 data/settings/web-password，可在宿主机执行
+          <code>docker compose exec account cat /etc/wxbridge/web-password</code> 查看。</small
+        >
       </div>
     </main>
   </div>
@@ -504,7 +491,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
               <small>回复 · 图片 · 后台三条通道</small>
             </article>
           </div>
-          <AccountSetup v-if="snapshot?.capabilities?.login_actions" :snapshot="snapshot" @navigate="navigate" @refresh="refresh" @error="fail" />
+          <AccountSetup v-if="snapshot?.capabilities?.login_actions" :snapshot="snapshot" :catalog="catalog" @navigate="navigate" @create="editInstance()" @reload-models="loadModels" @refresh="refresh" @error="fail" />
           <div v-if="snapshot?.runtime?.config_pending" class="pending-strip">
             <div>
               <el-icon><Clock /></el-icon><span>存在尚未应用的实例配置</span
@@ -671,7 +658,15 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
           </section>
         </template>
 
-        <section v-else-if="page === 'instances'" class="panel instances-panel">
+        <div v-if="page === 'instances' && pendingAuthorization.length && snapshot?.capabilities?.service_control" class="pending-strip" role="status">
+          <div>
+            <el-icon><Connection /></el-icon><span>{{ pendingAuthorization.length }} 个实例尚未授权发送</span>
+            <small>{{ activeOperation ? activeOperation.message : pendingAuthorization.join("、") + " 需要授权后才能回复。" }}</small>
+          </div>
+          <el-button size="small" type="primary" :loading="!!activeOperation" :disabled="!!activeOperation"
+            @click="action(authorizeAction(snapshot))">{{ authorizeLabel }}</el-button>
+        </div>
+        <section v-if="page === 'instances'" class="panel instances-panel">
           <div class="table-toolbar">
             <el-input
               v-model="filter"
