@@ -14,6 +14,27 @@ class InstanceLog(logging.LoggerAdapter):
         return message+' '+field, kwargs
 
 
+def problem_file(cfg):
+    """Warnings and errors kept across restarts, only while some instance has tracing switched on.
+
+    Lives next to the trace database, so the web console can show what went wrong before the last restart.
+    """
+    instances = getattr(cfg, 'instances', None)
+    if not instances or not any(item.trace.enabled for item in instances.values()):
+        return None
+    try:
+        from wxbridge.app.status.trace import PROBLEMS, trace_directory
+        from wxbridge.storage.person_memory import private_directory
+        handler = RotatingFileHandler(private_directory(trace_directory(cfg.account.memory_directory))/PROBLEMS,
+                                      maxBytes=2 * 1024 * 1024, backupCount=1, encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    handler.setLevel(logging.WARNING)
+    # A full timestamp: the console cannot guess the year of an old line after a restart.
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    return handler
+
+
 def setup_logging(cfg, verbose=True):
     log.setLevel(logging.DEBUG if verbose else logging.INFO)
     for handler in log.handlers[:]:
@@ -31,3 +52,6 @@ def setup_logging(cfg, verbose=True):
         log.addHandler(fh)
     except OSError:
         pass
+    problems = problem_file(cfg)
+    if problems is not None:
+        log.addHandler(problems)

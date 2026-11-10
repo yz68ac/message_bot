@@ -18,6 +18,7 @@ LABELS = {
     'target.context_budget_strategy':'上下文裁剪策略', 'target.max_reply_chars':'每条发送消息字符上限',
     'reply_style.wechat_emoticons_enabled':'微信表情文字', 'reply_style.omit_trailing_period':'省略回复末尾句号',
     'reply_style.tone':'回复语气', 'reply_style.max_messages':'每次回复最多分几条发送',
+    'trace.enabled':'保存提示词与模型回复',
     'participation.enabled':'自动回复', 'participation.debounce_seconds':'合并消息等待 / 秒',
     'participation.max_wait_seconds':'最长合并等待 / 秒', 'participation.max_batch_messages':'每批消息上限',
     'participation.address_names':'被称呼时识别的名字', 'participation.pat_enabled':'响应拍一拍',
@@ -50,6 +51,7 @@ LABELS = {
 }
 GROUPS = (
     ('reply','回复与上下文',('target','reply_style'),'控制回复节奏、发送分片与上下文。超过每条消息字符上限时分条发送，保留完整回复。微信表情文字开关不限制 Unicode emoji，也不改写代码、引用和链接。recent 优先保留最近内容，strict 严格检查预算。回复语气 casual 是口语化的聊天风格，assistant 保持原有助手风格；模型用空行分段且段数不超过分条上限时逐条发送。'),
+    ('trace','调试追踪',('trace',),'开发阶段使用：把发给模型的完整提示词（含聊天记录和记忆）、模型原始回复和出错信息保存到 data/home/trace，重启后仍可在“对话追踪”中查看。内容含聊天原文，正式使用前请关闭并删除该目录。'),
     ('participation','自动回复与参与',('participation',),'自动回复开关同时控制群聊与私聊。开启后，私聊直接回复，群聊由参与模型判断；关闭后不再接收新的自动回复消息。最长合并等待不能小于合并消息等待。'),
     ('memory','记忆与学习',('memory',),'记忆整理、被动关系学习和头像分类。相关模型在基本配置中选择。'),
     ('profile','群资料',('profile',),'群资料分析的采样与频率。触发消息数不能大于批次大小。'),

@@ -182,7 +182,7 @@ class ProfileControllerTests(unittest.TestCase):
         store.messages_after.return_value = []
         self.session = SimpleNamespace(cfg=cfg, store=store, chat_id=IDENTITY['chat'],
             chat_title='合成群', journal={'identity': IDENTITY}, memory=SimpleNamespace(store=None), last_local_id=10,
-            models=Mock(), metrics=Mock(), has_foreground_tasks=Mock(return_value=False), job_factory=Mock())
+            models=Mock(), metrics=Mock(), has_foreground_tasks=Mock(return_value=False), job_factory=Mock(), log=Mock())
         self.session.models.status.return_value = {'background': dict(running=False, queued=0)}
         self.clock = patch('wxbridge.app.tasks.group_profile.time.time', return_value=NOW)
         self.clock.start()

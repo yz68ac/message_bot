@@ -8,6 +8,7 @@ from wxbridge.ai.context.identity import member_labels
 from wxbridge.ai.reply.output import format_reply, without_trailing_period
 from wxbridge.ai.reply.prompt import build_prompt
 from wxbridge.ai.roles import model_settings
+from wxbridge.app.status.trace import record_event
 from wxbridge.app.tasks.policy import GenerationFailure
 from wxbridge.app.execution.workers import WorkerLease, WorkerCleanupError
 from wxbridge.storage.memory_selection import memory_dialogue
@@ -25,6 +26,7 @@ class ReplyController:
                 job.close()
                 del self.jobs[task_id]
                 self.bot.log.info("废弃生成 task=%s version=%s", task_id, version)
+                record_event(self.bot.cfg, 'reply_discarded', task=task_id, version=version)
                 continue
             result = job.poll()
             if result is None:
@@ -71,6 +73,8 @@ class ReplyController:
                     continue
                 self.bot.log.info("生成结束 task=%s version=%s chunks=%s images=%s error=%s", task_id, version,
                          len(chunks), (result.get("vision") or {}).get("images", 0), error or "none")
+                record_event(self.bot.cfg, 'reply_final', task=task_id, version=version, chunks=chunks,
+                             image_request=bool(proposal), vision=result.get('vision'), search=result.get('search'))
 
     def _chunks(self, text):
         style = self.bot.cfg.reply_style
@@ -156,7 +160,9 @@ class ReplyController:
                                      profile=profile),)
                 if task.get('reply_expires_at') is not None:
                     timeout = min(timeout, max(0, task['reply_expires_at']-time.time()))
-                with WorkerLease(self.bot.job_factory("generate", payload, timeout=timeout)) as lease:
+                meta = dict(task=task_id, version=version, attempt=task.get('generation_attempts'),
+                            source_ids=[m['local_id'] for m in task['triggers']])
+                with WorkerLease(self.bot.job_factory("generate", payload, timeout=timeout, meta=meta)) as lease:
                     with self.bot.journal.db:
                         task["generation"] = "running"
                         task["memory_used"] = dict(revision=memory_view.revision if memory_view and memory else None,
@@ -171,7 +177,8 @@ class ReplyController:
                 raise
             except Exception as exc:
                 self._failed(task_id, version, dict(error=getattr(exc,'code',type(exc).__name__)))
-                self.bot.log.error("生成未启动 task=%s category=%s", task_id, type(exc).__name__)
+                self.bot.log.error("生成未启动 task=%s category=%s", task_id, type(exc).__name__,
+                                   exc_info=self.bot.cfg.trace.enabled)
         return started
 
     def _failed(self, task_id, version, result):
@@ -180,11 +187,13 @@ class ReplyController:
         if failure.code == 'context_required_too_large':
             with self.bot.journal.db:
                 self.bot.journal.set('context', {**self.bot.journal.get('context', {}), 'reply':dict(error=failure.code)})
+        fallback = format_reply('消息或引用内容过长，请分开发送。' if failure.code == 'context_required_too_large'
+                                else '刚才没接上，等会儿再问我一下。', self.bot.cfg)
         self.bot.journal.generation_failure(task_id, version, failure.code, time.time(),
             retryable=failure.retryable, retries=settings.generation_retries,
-            delay=settings.generation_retry_delay_seconds,
-            fallback=format_reply('消息或引用内容过长，请分开发送。' if failure.code == 'context_required_too_large'
-                                  else '刚才没接上，等会儿再问我一下。', self.bot.cfg))
+            delay=settings.generation_retry_delay_seconds, fallback=fallback)
+        record_event(self.bot.cfg, 'reply_failed', task=task_id, version=version, error=failure.code,
+                     retryable=failure.retryable, fallback=fallback)
         self.bot.log.warning('生成失败 task=%s version=%s category=%s retryable=%s',
                     task_id, version, failure.code, failure.retryable)
         native = next((m.get('native_finish_reason') for m in reversed(result.get('model_metrics') or [])

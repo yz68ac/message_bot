@@ -7,6 +7,7 @@ import time
 from wxbridge.ai.context.selection import ContextError, read_context
 from wxbridge.ai.background.participation import build_prompt, parse_decision
 from wxbridge.ai.roles import model_settings
+from wxbridge.app.status.trace import record_event
 from wxbridge.app.tasks.policy import participation_failure_code
 from wxbridge.app.execution.workers import WorkerLease, WorkerCleanupError
 
@@ -80,6 +81,7 @@ class ParticipationController:
             self.bot.journal.fail_participation(snapshot, now, code)
             self.update(outcome='error', error=code, last_duration_ms=duration)
             self.bot.log.warning('参与决策失败 category=%s', code)
+            record_event(self.bot.cfg, 'participation_failed', error=code, source_ids=snapshot['source_ids'])
             return
         try:
             decision = parse_decision(json.dumps(result['decision']), snapshot['source_ids'])
@@ -89,6 +91,9 @@ class ParticipationController:
             code = participation_failure_code(dict(error=getattr(exc, 'code', str(exc))))
             self.bot.journal.fail_participation(snapshot, now, code)
             self.update(outcome='error', error=code, last_duration_ms=duration)
+            self.bot.log.warning('参与决策无效 category=%s', code)
+            record_event(self.bot.cfg, 'participation_failed', error=code, source_ids=snapshot['source_ids'],
+                         decision=result.get('decision'))
             return
         approved = [identifier for task in tasks for identifier in task['trigger_ids']]
         expired = all(now >= m['time']+self.bot.cfg.target.max_message_age_seconds
@@ -98,6 +103,8 @@ class ParticipationController:
                                task_ids=[task['id'] for task in tasks]))
         self.bot.log.info('参与决策完成 candidates=%s selected=%s tasks=%s',
                           len(snapshot['source_ids']), len(approved), len(tasks))
+        record_event(self.bot.cfg, 'participation_decision', outcome='approved' if tasks else 'expired' if expired else 'silent',
+                     source_ids=snapshot['source_ids'], reply_to=approved, task_ids=[task['id'] for task in tasks])
 
     def _rows(self, snapshot, now):
         rows = read_context(self.bot.cfg,self.bot.store,self.bot.chat_id,snapshot['messages'],
@@ -152,11 +159,13 @@ class ParticipationController:
                 code = participation_failure_code(dict(error=getattr(exc, 'code', type(exc).__name__)))
                 self.bot.journal.fail_participation(snapshot, now, code)
                 self.update(outcome='error', error=code)
+                self.bot.log.warning('参与决策未启动 category=%s', code, exc_info=self.bot.cfg.trace.enabled)
                 return
             timeout = model_settings(self.bot.cfg, 'participation').options.timeout_seconds
             try:
                 with WorkerLease(self.bot.job_factory('participation', (self.bot.cfg, prompt,
-                    dict(source_ids=snapshot['source_ids'])), timeout=timeout)) as lease:
+                    dict(source_ids=snapshot['source_ids'])), timeout=timeout,
+                    meta=dict(source_ids=snapshot['source_ids']))) as lease:
                     self.update(outcome='evaluating', error='', started_at=now)
                     self.pending, self.started, self.job = snapshot, time.monotonic(), lease.job
                     lease.transfer()
@@ -166,6 +175,7 @@ class ParticipationController:
                 self.bot.journal.fail_participation(snapshot, now,
                     participation_failure_code(dict(error=getattr(exc, 'code', type(exc).__name__))))
                 self.update(outcome='error', error='participation_worker_failed')
+                self.bot.log.warning('参与决策启动失败 category=%s', type(exc).__name__, exc_info=self.bot.cfg.trace.enabled)
                 return
             self._collect(now)
             return

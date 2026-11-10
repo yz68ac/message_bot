@@ -171,6 +171,9 @@
     "tone": "assistant",
     "max_messages": 2
   },
+  "trace": {
+    "enabled": true
+  },
   "participation": {
     "enabled": false,
     "debounce_seconds": 2,

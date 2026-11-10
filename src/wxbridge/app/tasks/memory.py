@@ -34,7 +34,7 @@ class MemoryController:
                     session.journal.set('passive_learning', state)
             except Exception as exc:
                 self.error = type(exc).__name__
-                session.log.error('记忆初始化失败 category=%s', self.error)
+                session.log.error('记忆初始化失败 category=%s', self.error, exc_info=cfg.trace.enabled)
 
     def status(self):
         return dict(enabled=self.store is not None, running=self.job is not None, error=self.error,
@@ -155,7 +155,7 @@ class MemoryController:
                     value["avatars"][uid] = item
                     if len(value["avatars"]) >= avatars.max_per_batch:
                         break
-            with WorkerLease(self.bot.job_factory("memory", (self.bot.cfg, value),
+            with WorkerLease(self.bot.job_factory("memory", (self.bot.cfg, value), meta=dict(task=record['id']),
                                               timeout=model_settings(self.bot.cfg, 'memory').options.timeout_seconds+2)) as lease:
                 with self.bot.journal.db:
                     record["state"] = "running"
@@ -185,4 +185,5 @@ class MemoryController:
                         record.update(state='quarantined', quarantined_at=now)
                     self.bot.journal.put_memory(record)
                 self.bot.journal.set("memory_error", code)
-            self.bot.log.warning("记忆延后 category=%s", code)
+            self.bot.log.warning("记忆延后 task=%s category=%s", record["id"] if record else None, code,
+                                 exc_info=self.bot.cfg.trace.enabled)

@@ -170,9 +170,10 @@ class ConversationSession(SessionPhases):
             if self.last_local_id <= old_cursor:
                 raise StoreError("消息分页游标未前进")
 
-    def _new_job(self, kind, payload, *, timeout):
+    def _new_job(self, kind, payload, *, timeout, meta=None):
+        """meta (task, version, ...) only labels the development trace; spawned jobs ignore it."""
         if kind in ('generate', 'memory', 'participation', 'group_profile'):
-            return self.models.submit(kind, payload, timeout=timeout)
+            return self.models.submit(kind, payload, timeout=timeout, meta=meta)
         return ProcessJob(kind, payload, timeout=timeout)
 
     def submit_images(self, request, *, deadline=None, source_image=None):

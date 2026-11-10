@@ -13,6 +13,7 @@ def default_config():
     cfg['provider_env']=str(Path(__file__).parent/'.synthetic-provider.env')
     cfg['target']['bot_name']='DeepSeek'
     cfg['participation'].update(enabled=True, debounce_seconds=0, address_names=['ds', 'deepseek'])
+    cfg['trace']['enabled']=False  # Fixtures must not write a trace database; trace tests switch it on explicitly.
     for role in cfg['models']: cfg['models'][role]['model']='synthetic-model'
     return snapshot(cfg)
 

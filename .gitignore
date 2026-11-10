@@ -69,3 +69,6 @@ Thumbs.db
 /src/web/backend/dist/
 
 /provider.env
+
+# Development trace (prompts, replies, problems); contains chat text
+/trace/

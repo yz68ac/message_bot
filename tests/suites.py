@@ -64,6 +64,7 @@ SUITES = {
         'test_runtime',
         'test_search',
         'test_tool_loop',
+        'test_trace',
         'test_ui',
         'test_worker_lifecycle',
     ),

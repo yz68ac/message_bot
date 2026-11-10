@@ -32,7 +32,7 @@ class InstanceFixture(unittest.TestCase):
         models = json_value(default_config().models)
         self.instance_data = [dict(id=name, chat=chat, enabled=True,
             system_prompt_file='system.md', models=deepcopy(models),
-            target=dict(bot_name=name), search=dict(enabled=False),
+            target=dict(bot_name=name), search=dict(enabled=False), trace=dict(enabled=False),
             memory=dict(enabled=False, avatar=dict(enabled=False)))
             for name,chat in zip(('alpha','beta'),CHATS)]
         p = patch.dict(os.environ, {}, clear=True); p.start(); self.addCleanup(p.stop)

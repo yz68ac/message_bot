@@ -10,7 +10,7 @@ from .models import (
     RuntimePaths, Section, UNSET, freeze,
 )
 
-INSTANCE_SECTIONS = ('target', 'model_clients', 'models', 'profile', 'reply_style',
+INSTANCE_SECTIONS = ('target', 'model_clients', 'models', 'profile', 'reply_style', 'trace',
                      'participation', 'memory', 'search', 'tools', 'vision', 'queue', 'image_generation')
 ACCOUNT_FIELDS = ('db_dir', 'keys_file', 'decrypted_dir', 'state_file', 'log_file',
                   'wechat_process', 'source', 'poll_interval_seconds', 'provider_env')

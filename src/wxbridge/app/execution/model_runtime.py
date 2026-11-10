@@ -2,12 +2,16 @@
 from wxbridge.config import InstanceConfig
 from concurrent.futures import Future, CancelledError
 from copy import deepcopy
+import logging
 from queue import Queue, Empty
 from threading import Thread, Lock, Event
 import time
 from provider import ModelError, create_client, capture_metrics, load_config
 from wxbridge.ai.client import _scope, client_for
+from wxbridge.app.status.trace import JOB_ROLES, JobTrace, activate, deactivate, store_for
 from wxbridge.config.codec import channel_items
+
+log = logging.getLogger('wxbridge')
 
 class ModelJob:
 
@@ -82,6 +86,8 @@ class ModelLane:
                         job.check()
                     except Exception as exc:
                         value = dict(ok=False, error=getattr(exc, 'code', type(exc).__name__), retryable=getattr(exc, 'retryable', False))
+                        if not isinstance(exc, (CancelledError, ModelError)):
+                            log.warning('模型任务异常 lane=%s category=%s', self.name, type(exc).__name__, exc_info=True)
                     job.future.set_result(value)
             finally:
                 with self.lock:
@@ -120,24 +126,43 @@ class ConversationModels:
         config = load_config(cfg.account.provider_env)
         self.lanes = {name: ModelLane(name, connection, config) for name, connection in channel_items(cfg.model_clients)}
 
-    def submit(self, kind, payload, *, timeout):
+    def submit(self, kind, payload, *, timeout, meta=None):
         lane = self.lanes['reply' if kind == 'generate' or (kind == 'request' and payload[1] == 'reply') else 'background']
         payload = deepcopy(payload)
+        store = store_for(self.cfg)
+        trace = JobTrace(store, dict(meta or {}, instance=self.cfg.id, role=JOB_ROLES.get(kind, kind))) if store else None
 
         def execute(job):
             with capture_metrics() as metrics:
-                token = _scope.set((lane, self.cfg, job, metrics))
+                token, traced = _scope.set((lane, self.cfg, job, metrics)), activate(trace)
                 try:
-                    return dict(ok=True, **self._execute(kind, payload, job), model_metrics=metrics)
+                    value = dict(ok=True, **self._execute(kind, payload, job), model_metrics=metrics)
+                    if trace:
+                        trace.finish(kind=kind, ok=True, result=value, context=value.get('context_stats'))
+                    return value
                 except Exception as exc:
                     result = dict(ok=False, error=getattr(exc, 'code', type(exc).__name__), retryable=getattr(exc, 'retryable', False), model_metrics=metrics)
                     if kind == 'participation':
                         from wxbridge.app.tasks.policy import participation_failure_code
                         result['error'] = participation_failure_code(result)
+                    if trace:
+                        trace.finish(kind=kind, ok=False, exc=exc)
+                    self._log_failure(kind, meta, exc, traceback=trace is not None)
                     return result
                 finally:
+                    deactivate(traced)
                     _scope.reset(token)
         return lane.submit(execute, timeout)
+
+    def _log_failure(self, kind, meta, exc, *, traceback):
+        if isinstance(exc, CancelledError):
+            return
+        task, instance = (meta or {}).get('task'), getattr(self.cfg, 'id', '')
+        if isinstance(exc, ModelError):
+            # The owner loop reports the failure code as a warning; this line only adds the context.
+            log.info('模型调用失败 instance=%s kind=%s task=%s error=%s status=%s', instance, kind, task, exc.code, exc.status)
+        else:
+            log.warning('模型任务异常 instance=%s kind=%s task=%s category=%s', instance, kind, task, type(exc).__name__, exc_info=traceback)
 
     def _execute(self, kind, payload, job):
         cfg = self.cfg

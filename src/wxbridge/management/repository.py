@@ -179,7 +179,7 @@ class ConfigRepository:
             document = _validated(combined, self._directory(identifier)/'config.json', environment=False, validate_role_models=False)
             effective = instance_from_document(document)
             return dict(id=identifier, config=data, revision=version,
-                        effective={key:json_value(getattr(effective,key)) for key in ['models', 'model_clients', 'target', 'queue', 'reply_style', 'participation', 'memory', 'profile', 'search', 'tools', 'vision', 'image_generation']})
+                        effective={key:json_value(getattr(effective,key)) for key in ['models', 'model_clients', 'target', 'queue', 'reply_style', 'trace', 'participation', 'memory', 'profile', 'search', 'tools', 'vision', 'image_generation']})
 
     def save(self, identifier, data, expected, *, create=False):
         with self.lock:

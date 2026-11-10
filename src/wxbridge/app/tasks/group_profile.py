@@ -89,6 +89,7 @@ class ProfileController:
         if not result.get('ok'):
             self.error = result.get('error', 'profile_analysis_failed')
             self.next_at = time.time() + 60
+            self.session.log.warning('群资料分析失败 category=%s', self.error)
             return
         if not self.document.apply(result['proposal'], pending):
             self.error = 'profile_stale_result'
@@ -157,13 +158,14 @@ class ProfileController:
                 return
             payload = dict(chat=self.session.chat_title, bot=self.session.store.self_wxid,
                            **pending['profile'], messages=messages)
-            self.job = self.session.job_factory('group_profile', (self.session.cfg, payload),
+            self.job = self.session.job_factory('group_profile', (self.session.cfg, payload), meta=dict(scan_through=through),
                 timeout=model_settings(self.session.cfg, 'group_profile').options.timeout_seconds + 2)
             self.pending = pending
             self.error = ''
         except Exception as error:
             self.error = str(error) if isinstance(error, ValueError) and str(error).startswith('profile_') else type(error).__name__
             self.next_at = time.time() + 60
+            self.session.log.warning('群资料分析未启动 category=%s', self.error, exc_info=self.session.cfg.trace.enabled)
 
     def status(self):
         return dict(enabled=True, running=self.job is not None, members=len(self.document.data['members']),

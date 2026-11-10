@@ -46,6 +46,12 @@
     "wechat_emoticons_enabled": false
   },
 
+  // 调试追踪（开发阶段）。开启后把发给模型的完整提示词、模型原始回复和出错信息保存到
+  // data/home/trace，重启后仍可在管理台“对话追踪”查看。内容含聊天原文，正式使用前请设为 false 并删除该目录。
+  "trace": {
+    "enabled": true
+  },
+
   // 这里填写 provider 连接名，不是模型 ID；内置 openai / anthropic / deepseek / gemini。
   // 每实例的三条通道各复用自己的 client，同通道串行，跨通道和跨实例并行。
   "model_clients": {

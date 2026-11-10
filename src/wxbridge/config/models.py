@@ -226,6 +226,12 @@ class ReplyStyleConfig(Section):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TraceConfig(Section):
+    """Development aid: keep full prompts, raw model replies and problems across restarts."""
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SearchConfig(Section):
     enabled: bool = True
     backend: str = field(default='external', metadata={'choices': ('external', 'native', 'auto'), 'error': 'invalid_search_backend'})
@@ -404,6 +410,7 @@ class InstanceConfig(Section):
     queue: QueueConfig = field(default_factory=QueueConfig)
     participation: ParticipationConfig = field(default_factory=ParticipationConfig)
     reply_style: ReplyStyleConfig = field(default_factory=ReplyStyleConfig)
+    trace: TraceConfig = field(default_factory=TraceConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     tools: ToolConfig = field(default_factory=ToolConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)

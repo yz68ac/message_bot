@@ -34,6 +34,8 @@ def run_bot(cfg: AppConfig, *, once=False, echo=False):
             bot.run(once=once)
         finally:
             bot.close()
+            from wxbridge.app.status.trace import close_stores
+            close_stores()
     return 0
 
 
