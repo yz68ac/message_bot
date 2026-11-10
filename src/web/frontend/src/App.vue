@@ -25,6 +25,7 @@ import LogViewer from "./components/LogViewer.vue";
 import { entryTime, levelLabel, levelTag, sourceLabel, type LogFilter } from "./logModel";
 import { authorizeAction } from "./setupModel";
 import { runServiceAction, runningOperation, type ServiceAction } from "./serviceActions";
+import { blockedText, errorText, instanceStatus } from "./instanceModel";
 
 const componentLabel: Record<string, string> = { bot: "机器人", wechat: "微信会话", sender: "发送组件", recovery: "自动恢复", web: "管理台" };
 const channelLabel: Record<string, string> = { reply: "回复", image: "图片", background: "后台" };
@@ -47,7 +48,12 @@ const pages = [
   { id: "logs", name: "运行日志", subtitle: "LOGS", icon: Document },
   { id: "services", name: "服务管理", subtitle: "SERVICES", icon: Setting },
 ];
-const page = ref("overview");
+// The page lives in the URL hash so reload, back/forward and bookmarks keep it.
+function pageFromHash() {
+  const id = window.location.hash.replace(/^#\/?/, "");
+  return pages.some((item) => item.id === id) ? id : "overview";
+}
+const page = ref(pageFromHash());
 const logPreset = ref<{ source: string; level: LogFilter }>({ source: "all", level: "all" });
 const problems = computed(() => snapshot.value?.problems);
 function openLogs(level: LogFilter = "warning", source = "all") {
@@ -75,25 +81,25 @@ const statusOpen = ref(false);
 const statusInstance = computed(() =>
   instances.value.find((item) => item.id === statusId.value),
 );
-const instanceLabels: Record<string, string> = {
-  running: "运行中",
-  stopping: "正在停止",
-  stopped: "已停止",
-  waiting_service: "等待账号服务",
-  error: "启动/停止失败",
-  unknown: "状态未知",
-};
 const shouldStopInstance = (item: any) =>
   item.enabled || ["running", "stopping"].includes(item.runtime_state);
-const instanceErrors: Record<string, string> = {
-  instance_target_not_allowed: "会话尚未加入原生发送授权清单。",
-  instance_configuration_changed: "配置在操作期间发生变化，请重新应用。",
-  account_config_changed_restart_required:
-    "账号配置发生变化，需要重启账号服务。",
-  instance_chat_identity_mismatch: "会话身份核对失败。",
-  instance_transition_failed:
-    "实例切换失败，请检查账号登录、模型配置和运行事件。",
-};
+const statusOf = (row: any) =>
+  instanceStatus(row, snapshot.value?.account_setup?.pending_instances || [], !!instanceRequests.value[row.id]);
+const chatNames = ref<Record<string, string>>({});
+const chatName = (row: any) => chatNames.value[row.chat] || "";
+let namesLoading = false;
+async function loadChatNames() {
+  if (namesLoading || !authenticated.value || !instances.value.length) return;
+  namesLoading = true;
+  try {
+    chatNames.value = await api("/contacts/names");
+  } catch (e: any) {
+    // Names are a convenience; the wxid is still shown when contacts are unavailable.
+    if (e?.status === 401) fail(e);
+  } finally {
+    namesLoading = false;
+  }
+}
 const title = computed(() => pages.find((p) => p.id === page.value)!);
 const instances = computed<any[]>(() => snapshot.value?.instances || []);
 const enabledCount = computed(
@@ -105,7 +111,7 @@ const running = computed(
 const filtered = computed(() =>
   instances.value.filter(
     (i) =>
-      `${i.id} ${i.chat} ${i.reply_model}`
+      `${i.id} ${i.chat} ${chatNames.value[i.chat] || ""} ${i.reply_model}`
         .toLowerCase()
         .includes(filter.value.toLowerCase()) &&
       (statusFilter.value === "all" ||
@@ -190,19 +196,14 @@ async function refreshModels() {
   }
 }
 async function instanceAction(item: any, kind: "start" | "stop" | "apply") {
-  const names = { start: "启用实例", stop: "停用实例", apply: "应用此实例" };
   try {
-    await ElMessageBox.confirm(
-      kind === "stop"
-        ? `停用 ${item.id}：停止新任务，等待已在执行的请求结束。其他实例继续运行。`
-        : `${names[kind]} ${item.id}。若账号服务已停止，会保留配置等待下次启动，不会自动启动账号服务。`,
-      names[kind],
-      {
-        confirmButtonText: "确认",
-        cancelButtonText: "取消",
-        type: kind === "stop" ? "warning" : "info",
-      },
-    );
+    // Enabling and applying are easy to undo; only stopping interrupts a running chat.
+    if (kind === "stop")
+      await ElMessageBox.confirm(
+        `停用 ${item.id}：停止新任务，等待已在执行的请求结束。其他实例继续运行。`,
+        "停用实例",
+        { confirmButtonText: "停用", cancelButtonText: "取消", type: "warning" },
+      );
     instanceBusy.value = item.id;
     const result = await api(
       `/instances/${encodeURIComponent(item.id)}/actions/${kind}`,
@@ -242,7 +243,19 @@ async function navigate(id: string) {
   if (promptEditor.value && !(await promptEditor.value.canLeave())) return;
   if (accountSettings.value && !(await accountSettings.value.canLeave())) return;
   page.value = id;
+  if (pageFromHash() !== id) window.location.hash = `#/${id}`;
 }
+async function followHash() {
+  const id = pageFromHash(), before = page.value;
+  if (id === before) return;
+  await navigate(id);
+  // An unsaved-edit guard kept the page; put the address back to match it.
+  if (page.value !== id) history.replaceState(null, "", `#/${before}`);
+}
+watch(page, (id) => { if (id === "instances") void loadChatNames(); }, { immediate: true });
+watch(() => instances.value.map((item) => item.chat).join(","), () => {
+  if (page.value === "instances") void loadChatNames();
+});
 async function action(kind: ServiceAction) {
   if (await runServiceAction(kind, instances.value.length, fail)) await refresh();
 }
@@ -258,9 +271,13 @@ function beforeUnload(event: BeforeUnloadEvent) {
 }
 onMounted(() => {
   window.addEventListener("beforeunload", beforeUnload);
+  window.addEventListener("hashchange", followHash);
   void initialize();
 });
-onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
+onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", beforeUnload);
+  window.removeEventListener("hashchange", followHash);
+});
 </script>
 
 <template>
@@ -682,7 +699,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
             >
           </div>
           <el-table :data="filtered" class="instances-table"
-            ><el-table-column label="会话实例" min-width="200"
+            ><el-table-column label="会话实例" min-width="220"
               ><template #default="{ row }"
                 ><div class="table-instance">
                   <span :class="['chat-icon', row.kind]"
@@ -690,54 +707,35 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
                   ></span>
                   <div>
                     <b>{{ row.id }}</b
-                    ><small>{{
-                      row.kind === "private" ? "私聊" : "群聊"
-                    }}</small>
+                    ><small>{{ row.kind === "private" ? "私聊" : "群聊" }}<template v-if="chatName(row)"> · {{ chatName(row) }}</template></small>
                   </div>
                 </div></template
               ></el-table-column
-            ><el-table-column label="运行状态" min-width="155"
+            ><el-table-column label="状态" min-width="190"
               ><template #default="{ row }">
-                <span
-                  :class="[
-                    'state-pill',
-                    { enabled: row.runtime_state === 'running' },
-                  ]"
-                  >{{ instanceLabels[row.runtime_state] || "未知" }}</span
-                >
-                <small v-if="row.error" class="runtime-error">{{
-                  instanceErrors[row.error] || row.error
-                }}</small>
-                <small v-else-if="row.config_pending" class="runtime-pending"
-                  >有待应用配置</small
-                >
+                <span :class="['state-pill', 'tone-' + statusOf(row).tone]">{{ statusOf(row).label }}</span>
+                <small v-if="statusOf(row).detail" :class="statusOf(row).tone === 'error' ? 'runtime-error' : 'runtime-pending'">{{ statusOf(row).detail }}</small>
               </template></el-table-column
             ><el-table-column
               prop="chat"
               label="会话 ID"
-              min-width="210"
+              min-width="200"
               show-overflow-tooltip
             /><el-table-column
-              prop="reply_model"
               label="回复模型"
-              min-width="180"
-            /><el-table-column label="配置状态" width="110"
-              ><template #default="{ row }"
-                ><span :class="['state-pill', { enabled: row.enabled }]">{{
-                  row.enabled ? "已启用" : "已关闭"
-                }}</span></template
-              ></el-table-column
-            ><el-table-column label="队列快照" width="100"
+              min-width="170"
+              ><template #default="{ row }">{{ row.reply_model || "未配置" }}</template></el-table-column
+            ><el-table-column label="待处理" width="80"
               ><template #default="{ row }">{{
                 row.queue_length
               }}</template></el-table-column
-            ><el-table-column label="操作" width="270" fixed="right"
+            ><el-table-column label="操作" width="250" fixed="right"
               ><template #default="{ row }"
                 ><el-button link type="primary" @click="editInstance(row.id)"
-                  >模型/配置</el-button
+                  >配置</el-button
                 >
                 <el-button link type="primary" @click="showStatus(row.id)"
-                  >状态</el-button
+                  >详情</el-button
                 >
                 <el-button
                   link
@@ -773,7 +771,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
                     !snapshot?.capabilities?.instance_control
                   "
                   @click="instanceAction(row, 'apply')"
-                  >应用此实例</el-button
+                  >应用</el-button
                 >
               </template></el-table-column
             ></el-table
@@ -784,31 +782,30 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
               <div class="mobile-instance-heading">
                 <div class="table-instance">
                   <span :class="['chat-icon', row.kind]"><el-icon><ChatDotRound /></el-icon></span>
-                  <div><b>{{ row.id }}</b><small>{{ row.kind === 'private' ? '私聊' : '群聊' }}</small></div>
+                  <div><b>{{ row.id }}</b><small>{{ row.kind === 'private' ? '私聊' : '群聊' }}<template v-if="chatName(row)"> · {{ chatName(row) }}</template></small></div>
                 </div>
-                <span :class="['state-pill', { enabled: row.runtime_state === 'running' }]">{{ instanceLabels[row.runtime_state] || '未知' }}</span>
+                <span :class="['state-pill', 'tone-' + statusOf(row).tone]">{{ statusOf(row).label }}</span>
               </div>
               <dl class="mobile-instance-details">
                 <div><dt>会话 ID</dt><dd>{{ row.chat }}</dd></div>
                 <div><dt>回复模型</dt><dd>{{ row.reply_model || '未配置' }}</dd></div>
-                <div><dt>配置状态</dt><dd>{{ row.enabled ? '已启用' : '已关闭' }}<template v-if="row.config_pending"> · 有待应用配置</template></dd></div>
-                <div><dt>队列快照</dt><dd>{{ row.queue_length }}</dd></div>
+                <div><dt>待处理</dt><dd>{{ row.queue_length }}</dd></div>
               </dl>
-              <small v-if="row.error" class="runtime-error">{{ instanceErrors[row.error] || row.error }}</small>
+              <small v-if="statusOf(row).detail" :class="statusOf(row).tone === 'error' ? 'runtime-error' : 'runtime-pending'">{{ statusOf(row).detail }}</small>
               <div class="mobile-instance-actions">
-                <el-button size="small" @click="editInstance(row.id)">模型/配置</el-button>
-                <el-button size="small" @click="showStatus(row.id)">状态</el-button>
+                <el-button size="small" @click="editInstance(row.id)">配置</el-button>
+                <el-button size="small" @click="showStatus(row.id)">详情</el-button>
                 <el-button size="small" :type="shouldStopInstance(row) ? 'danger' : 'primary'" plain
                   :disabled="instanceBusy === row.id || !!instanceRequests[row.id] || row.runtime_state === 'stopping' || !snapshot?.capabilities?.instance_control"
                   @click="instanceAction(row, shouldStopInstance(row) ? 'stop' : 'start')">{{ instanceRequests[row.id] ? '等待确认' : shouldStopInstance(row) ? '停用' : '启用' }}</el-button>
                 <el-button v-if="row.enabled && row.config_pending" size="small" type="primary" plain
                   :disabled="instanceBusy === row.id || !!instanceRequests[row.id] || row.runtime_state === 'stopping' || !snapshot?.capabilities?.instance_control"
-                  @click="instanceAction(row, 'apply')">应用此实例</el-button>
+                  @click="instanceAction(row, 'apply')">应用</el-button>
               </div>
             </article>
           </div>
           <div class="panel-footnote">
-            启停与模型应用只作用于选中实例。账号服务已停止时，启用配置会等待下次启动；配置状态与实际运行状态分别显示。
+            启停与应用只作用于所选实例，其他实例继续运行。机器人停止时，启用的实例会在下次启动时开始回复。
           </div>
         </section>
 
@@ -929,14 +926,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
   >
     <template v-if="statusInstance">
       <div class="instance-status-heading">
-        <span
-          :class="[
-            'state-pill',
-            { enabled: statusInstance.runtime_state === 'running' },
-          ]"
-          >{{
-            instanceLabels[statusInstance.runtime_state] || "状态未知"
-          }}</span
+        <span :class="['state-pill', 'tone-' + statusOf(statusInstance).tone]">{{ statusOf(statusInstance).label }}</span
         ><small>{{
           statusInstance.snapshot_current
             ? "当前进程实时快照"
@@ -945,13 +935,13 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
       </div>
       <el-alert
         v-if="statusInstance.error"
-        :title="instanceErrors[statusInstance.error] || statusInstance.error"
+        :title="errorText(statusInstance.error)"
         type="error"
         :closable="false"
       />
       <el-descriptions :column="1" border>
-        <el-descriptions-item label="会话 ID">{{
-          statusInstance.chat
+        <el-descriptions-item label="会话">{{
+          chatName(statusInstance) ? chatName(statusInstance) + " · " + statusInstance.chat : statusInstance.chat
         }}</el-descriptions-item>
         <el-descriptions-item label="配置开关">{{
           statusInstance.enabled ? "已启用" : "已停用"
@@ -971,7 +961,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
               ? "有待应用修改"
               : "当前配置已确认"
         }}</el-descriptions-item>
-        <el-descriptions-item label="队列快照">{{
+        <el-descriptions-item label="待处理消息">{{
           statusInstance.queue_length
         }}</el-descriptions-item>
         <el-descriptions-item label="消息游标">{{
@@ -997,7 +987,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload));
           statusInstance.snapshot_current ? contextSummary(statusInstance.context?.reply) : "暂无运行快照"
         }}</el-descriptions-item>
         <el-descriptions-item label="发送阻塞">{{
-          statusInstance.blocked_reason || "无"
+          blockedText(statusInstance.blocked_reason) || "无"
         }}</el-descriptions-item>
       </el-descriptions>
       <h3 class="channel-heading">模型通道</h3>
