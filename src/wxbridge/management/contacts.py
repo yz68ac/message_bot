@@ -59,6 +59,18 @@ class ContactDirectory:
         self.data=data;self.key=key;self.updated=time.monotonic()
         return data
 
+    def names(self):
+        """Display names for the chats that instances are bound to; chats without a name are omitted."""
+        with self.lock:data=self._load(False)
+        chats={item['chat'] for item in self.repository.list()}
+        result={}
+        for raw in data['items']:
+            uid=raw.get('id')
+            if uid in chats:
+                name=str(raw.get('remark') or raw.get('nickname') or '')[:256]
+                if name:result[uid]=name
+        return result
+
     def search(self,query='',kind='all',refresh=False):
         if not isinstance(query,str) or len(query)>128 or kind not in ('all','group','private'):
             raise ManagementError('invalid_contact_query','搜索条件无效。')

@@ -33,6 +33,23 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(groups[0]['id'],'123456789@chatroom')
         self.assertEqual(self.client.get('/api/contacts',params={'q':'x'*129}).status_code,400)
 
+    def test_contact_names_cover_only_bound_instance_chats(self):
+        self.assertEqual(self.client.get('/api/contacts/names').status_code,401)
+        self.login()
+        names=self.client.get('/api/contacts/names').json()
+        self.assertEqual(names,{'wxid_synthetic_friend':'小林','123456789@chatroom':'开发讨论群'})
+
+    def test_authorize_operation_is_a_fixed_service_action(self):
+        headers=self.login()
+        response=self.client.post('/api/services/authorize',json={},headers=headers)
+        self.assertEqual(response.status_code,202,response.text)
+        self.assertEqual(response.json()['action'],'authorize')
+        self.assertEqual(self.client.post('/api/services/authorize_everything',json={},headers=headers).status_code,400)
+        operations=self.app.state.operations
+        operations.executor.shutdown(wait=True)  # the bind writes into the temporary account directory
+        self.assertEqual(operations.snapshot()[0]['state'],'done')
+        self.assertEqual(self.client.get('/api/overview').json()['account_setup']['pending_instances'],[])
+
 
     def test_configuration_schema_and_account_edits_require_auth_and_csrf(self):
         self.assertEqual(self.client.get('/api/config/schema').status_code,401)

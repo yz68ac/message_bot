@@ -887,6 +887,23 @@ button.text-link:hover {
   background: #ecfdf5;
   border-color: #a7f3d0;
 }
+.state-pill.tone-ok {
+  color: #059669;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.state-pill.tone-warn {
+  color: #b45309;
+  background: var(--ui-warning-soft);
+  border-color: var(--ui-warning-border);
+}
+
+.state-pill.tone-error {
+  color: var(--ui-danger);
+  background: var(--ui-danger-soft);
+  border-color: #fecaca;
+}
 
 .row-arrow {
   font-size: 12px;

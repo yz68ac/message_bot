@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { api } from "../api";
 import { prepareInstanceEditor } from "../editorModel";
 import ContactPicker from "./ContactPicker.vue";
@@ -49,6 +49,33 @@ function prepareEditor(config: any, effective: any = {}) {
  editor.value = prepareInstanceEditor(config, effective, settingsSchema.value?.defaults || {});
  editorJson.value = JSON.stringify(editor.value, null, 2);
 }
+// Reply style: read the configured value, then the effective one, then the default.
+// Writing creates the section only when the owner actually changes something.
+function styleValue(key: string) {
+  return editor.value.reply_style?.[key] ?? editorEffective.value?.reply_style?.[key]
+    ?? settingsSchema.value?.defaults?.reply_style?.[key];
+}
+function setStyle(key: string, value: any) {
+  editor.value.reply_style = { ...(editor.value.reply_style || {}), [key]: value };
+}
+let baseline = "";
+function currentText() {
+  if (editorTab.value !== "json") return JSON.stringify(editor.value);
+  try { return JSON.stringify(JSON.parse(editorJson.value)); } catch { return "\u0000invalid"; }
+}
+const dirty = () => editorOpen.value && currentText() !== baseline;
+async function confirmDiscard() {
+  if (!dirty() || editorBusy.value) return true;
+  try {
+    await ElMessageBox.confirm("实例配置有未保存的修改，关闭会丢弃这些修改。", "放弃修改？",
+      { confirmButtonText: "丢弃并关闭", cancelButtonText: "继续编辑", type: "warning" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function beforeClose(done: () => void) { if (await confirmDiscard()) done(); }
+async function cancel() { if (await confirmDiscard()) editorOpen.value = false; }
 async function editInstance(id?: string) {
   creating.value = !id;
   editorId.value = id || "chat-"+Array.from(crypto.getRandomValues(new Uint8Array(4)),v=>v.toString(16).padStart(2,"0")).join("");
@@ -71,6 +98,7 @@ async function editInstance(id?: string) {
         profile: {enabled:false},participation: {enabled:false},
       });
     editorTab.value="basic"; previousEditorTab="basic";
+    baseline = JSON.stringify(editor.value);
     editorOpen.value = true;
   } catch (e) {
     fail(e);
@@ -115,7 +143,7 @@ async function saveInstance(apply = false) {
       ElMessage.success(result.message);
     }
     editorOpen.value = false;
-    if (!apply) ElMessage.success("实例配置已保存，可点击‘应用此实例’生效。");
+    if (!apply) ElMessage.success("实例配置已保存，可在实例列表点击“应用”生效。");
     emit('saved', editorId.value);
   } catch (e: any) {
     if (e instanceof SyntaxError) ElMessage.error("JSON 格式有误，请先修正。");
@@ -134,7 +162,7 @@ defineExpose({open: editInstance});
     top="5vh"
     class="instance-config-dialog"
     :close-on-click-modal="false"
-    :close-on-press-escape="false"
+    :before-close="beforeClose"
     destroy-on-close
     ><div class="dialog-note">
       配置可以单独保存；“保存并应用”只重建当前实例。正在执行的请求会先结束，其他实例继续运行。
@@ -250,6 +278,48 @@ defineExpose({open: editInstance});
             }}</small>
           </div>
           <el-alert
+            v-if="selectedProvider && !selectedProvider.configured"
+            :title="`连接 ${selectedProvider.id} 还没有 API 密钥：请在部署目录的 provider.env 中填写，否则此实例无法回复。`"
+            type="warning"
+            show-icon
+            :closable="false"
+          />
+          <div class="form-divider">回复风格</div>
+          <div class="form-grid">
+            <el-form-item label="像朋友一样聊天"
+              ><el-switch
+                :model-value="styleValue('tone') === 'casual'"
+                active-text="口语化"
+                inactive-text="助手风格"
+                @update:model-value="(on: any) => setStyle('tone', on ? 'casual' : 'assistant')"
+            /></el-form-item
+            ><el-form-item label="一次回复最多分几条发送"
+              ><el-input-number
+                :model-value="styleValue('max_messages')"
+                :min="1"
+                :max="5"
+                controls-position="right"
+                @update:model-value="(value: any) => value && setStyle('max_messages', value)"
+            /></el-form-item>
+          </div>
+          <div class="form-grid">
+            <el-form-item label="省略每条末尾的句号"
+              ><el-switch
+                :model-value="!!styleValue('omit_trailing_period')"
+                active-text="省略"
+                @update:model-value="(on: any) => setStyle('omit_trailing_period', !!on)"
+            /></el-form-item
+            ><el-form-item label="微信表情文字（如 [微笑]）"
+              ><el-switch
+                :model-value="!!styleValue('wechat_emoticons_enabled')"
+                active-text="允许"
+                @update:model-value="(on: any) => setStyle('wechat_emoticons_enabled', !!on)"
+            /></el-form-item>
+          </div>
+          <small class="field-hint"
+            >口语化会让回复更短、更像真人；模型用空行分段时按段逐条发送，段数超过上限则整条发送。人设、兴趣和说话习惯在“系统提示词”中设置，可从模板开始。</small
+          >
+          <el-alert
             v-if="catalogError || catalog.error"
             :title="
               catalogError || '模型目录无效，可重新拉取或手动输入模型 ID。'
@@ -300,7 +370,7 @@ defineExpose({open: editInstance});
               </div>
               <el-form-item label="生图超时 / 秒"><el-input-number v-model="editor.models.image.options.timeout_seconds" :min="1" :max="300" controls-position="right" /></el-form-item>
               <small class="field-hint">用户明确要求绘图或引用图片要求修改时，由回复模型调用。改图只使用本轮成功读取的引用图片，每次一张；任务独立排队，完成后发回当前会话。请为改图选择支持图片编辑的图片模型，并开启图片理解。</small>
-              <el-alert v-if="editor.image_generation.enabled && !imageProvider?.image_configured" title="图片连接尚未配齐：请在 provider .env 中填写密钥；Gemini 还需要 GEMINI_IMAGE_BASE_URL。" type="warning" :closable="false" />
+              <el-alert v-if="editor.image_generation.enabled && !imageProvider?.image_configured" title="图片连接尚未配齐：请在部署目录的 provider.env 中填写密钥；Gemini 还需要 GEMINI_IMAGE_BASE_URL。" type="warning" :closable="false" />
             </el-collapse-item>
           </el-collapse>
           <el-collapse class="background-settings"
@@ -382,7 +452,7 @@ defineExpose({open: editInstance});
         ></el-tab-pane
       ></el-tabs
     ><template #footer
-      ><el-button @click="editorOpen = false">取消</el-button
+      ><el-button @click="cancel">取消</el-button
       ><el-button :loading="editorBusy" @click="saveInstance(false)"
         >仅保存</el-button
       ><el-button

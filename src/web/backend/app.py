@@ -252,6 +252,10 @@ def create_app(root, password, *, services=None, demo=False, static_dir=None, al
     def contact_directory(q: str='',kind: str='all',refresh: bool=False):
         return contacts.search(q,kind,refresh)
 
+    @app.get('/api/contacts/names')
+    def contact_names():
+        return contacts.names()
+
     @app.post('/api/instances',status_code=201)
     def create_instance(body: NewBody):
         return repository.save(body.id,body.config,None,create=True)
