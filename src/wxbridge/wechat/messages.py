@@ -30,14 +30,17 @@ def chunk_text(text: str, limit: int) -> list[str]:
     return chunks
 
 
-def reply_chunks(text: str, limit: int) -> list[str]:
-    """模型明确写成两段时按两条发送；完整保留内容，超长仍走安全分片。"""
-    parts = re.split(r"\n[ \t]*\n", text.strip())
+def reply_chunks(text: str, limit: int, max_messages: int = 2, finish=None) -> list[str]:
+    """模型用空行写成 2..max_messages 段时逐段发送；段数更多或含代码时保持一条。
+
+    完整保留内容，超长仍走安全分片。finish 只作用于按段拆出的各条消息，例如省略各条末尾句号。
+    """
+    parts = [part.strip() for part in re.split(r"\n[ \t]*\n", text.strip())]
     # 保留代码里的空行与连续块；代码仍只有超过传输上限才分片。
     code = any(re.match(r"(?:[ \t]+\S|def |class |import |from \w+.* import |[{}]\s*$|```|#|SELECT\b|CREATE\b)", line)
                for line in text.splitlines())
-    if not code and len(parts) == 2 and len(text.strip()) > 30 and all(p.strip() for p in parts):
-        return [chunk for part in parts for chunk in chunk_text(part, limit)]
+    if not code and 2 <= len(parts) <= max_messages and len(text.strip()) > 30 and all(parts):
+        return [chunk for part in parts for chunk in chunk_text(finish(part) if finish else part, limit)]
     return chunk_text(text, limit)
 
 

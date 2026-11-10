@@ -37,6 +37,15 @@
     // 可另加 bot_name 设置机器人称呼；称呼和真实 @ 都只作为判断线索，不强制回复。
   },
 
+  // 回复风格。tone=casual 时像朋友聊天一样口语化、短句；assistant 保持原有助手风格。
+  // 模型用空行分段且段数不超过 max_messages（1..5）时逐条发送，否则整条发送。
+  "reply_style": {
+    "tone": "casual",
+    "max_messages": 3,
+    "omit_trailing_period": true,
+    "wechat_emoticons_enabled": false
+  },
+
   // 这里填写 provider 连接名，不是模型 ID；内置 openai / anthropic / deepseek / gemini。
   // 每实例的三条通道各复用自己的 client，同通道串行，跨通道和跨实例并行。
   "model_clients": {

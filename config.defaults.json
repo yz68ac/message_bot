@@ -167,7 +167,9 @@
   },
   "reply_style": {
     "wechat_emoticons_enabled": false,
-    "omit_trailing_period": false
+    "omit_trailing_period": false,
+    "tone": "assistant",
+    "max_messages": 2
   },
   "participation": {
     "enabled": false,

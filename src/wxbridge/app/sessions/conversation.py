@@ -267,7 +267,7 @@ class ConversationSession(SessionPhases):
         status['image_generation'] = dict(enabled=self.cfg.image_generation.enabled,
             running=len(self.image_generation.jobs), last=status.get('last_image_generation'))
         status['reply_style'] = {key:getattr(self.cfg.reply_style, key)
-            for key, default in (('wechat_emoticons_enabled', False), ('omit_trailing_period', True))}
+            for key in ('wechat_emoticons_enabled', 'omit_trailing_period', 'tone', 'max_messages')}
         if self.instance_id is not None:
             status['instance_id'] = self.instance_id
         if stopped:

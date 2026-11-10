@@ -221,6 +221,8 @@ class ParticipationConfig(Section):
 class ReplyStyleConfig(Section):
     wechat_emoticons_enabled: bool = False
     omit_trailing_period: bool = False
+    tone: str = field(default='assistant', metadata={'choices': ('assistant', 'casual'), 'error': 'reply_style.tone must be assistant/casual'})
+    max_messages: int = field(default=2, metadata={'range': (1, 5), 'error': 'invalid_config_range'})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
