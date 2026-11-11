@@ -20,7 +20,7 @@ const props = withDefaults(defineProps<{ source?: string; level?: LogFilter }>()
   source: "all",
   level: "all",
 });
-const emit = defineEmits<{ error: [error: any] }>();
+const emit = defineEmits<{ error: [error: any]; trace: [entry: LogEntry] }>();
 
 const source = ref(props.source),
   level = ref<LogFilter>(props.level),
@@ -115,7 +115,13 @@ defineExpose({ load });
       class="logs-alert"
     />
     <div v-if="!entries.length && !busy" class="empty-state">
-      {{ level === "all" ? "没有可显示的日志。" : "没有符合条件的警告或错误。" }}
+      {{
+        source === "problems"
+          ? "没有历史问题记录。只有开启“保存提示词与模型回复”的实例出错时才会记录。"
+          : level === "all"
+            ? "没有可显示的日志。"
+            : "没有符合条件的警告或错误。"
+      }}
     </div>
     <ol v-else class="log-list">
       <li v-for="(entry, index) in entries" :key="index" :class="['log-entry', 'level-' + entry.level.toLowerCase()]">
@@ -126,6 +132,7 @@ defineExpose({ load });
           }}</el-tag>
           <span v-if="source === 'all'" class="log-source">{{ sourceLabel(entry.source) }}</span>
           <span v-if="entry.count > 1" class="log-count" title="连续重复的同一条日志">×{{ entry.count }}</span>
+          <button v-if="entry.trace" class="log-trace" type="button" title="打开这个任务发给模型的提示词和模型回复" @click="emit('trace', entry)">查看追踪</button>
           <button class="log-copy" type="button" @click="copy(entry)">复制</button>
         </div>
         <code class="log-text">{{ entry.text }}</code>
@@ -137,7 +144,8 @@ defineExpose({ load });
     </ol>
     <div class="logs-footnote">
       <span>显示 {{ entries.length }} / {{ total }} 条{{ truncated() ? " · 只读取每个文件最近 512 KB" : "" }}</span>
-      <span>普通信息只保留事件名和状态码；警告、错误与堆栈完整显示，密钥和长令牌已自动隐藏。</span>
+      <span v-if="source === 'problems'">历史问题保存在 data/home/trace，容器重启后仍在，不计入工作台的“最近问题”。</span>
+      <span v-else>普通信息只保留事件名和状态码；警告、错误与堆栈完整显示，密钥和长令牌已自动隐藏。</span>
     </div>
   </section>
 </template>

@@ -21,6 +21,8 @@ from wxbridge.management.repository import ConfigRepository, ManagementError
 from web.backend.services import BOT, Operations, ServiceManager
 from web.backend.logs import RUNTIME_DIR, LogReader
 from web.backend.status import overview
+from web.backend.trace import TraceReader
+from wxbridge.app.status.trace import PROBLEMS as PROBLEM_FILE, trace_directory
 from wxbridge.management.models import ModelCatalog
 from wxbridge.paths import frontend_path
 
@@ -108,14 +110,19 @@ class Sessions:
             self.values.pop(token,None)
 
 
-def create_app(root, password, *, services=None, demo=False, static_dir=None, allowed_hosts=None, secure_cookie=False, catalog_file=None, health_token=None, log_dir=None):
+def create_app(root, password, *, services=None, demo=False, static_dir=None, allowed_hosts=None, secure_cookie=False, catalog_file=None, health_token=None, log_dir=None, trace_dir=None):
     repository = ConfigRepository(root)
     try:
-        account_log = Path(repository.account().log_file)
+        account = repository.account()
+        account_log = Path(account.log_file)
+        trace_path = Path(trace_dir) if trace_dir else trace_directory(account.memory_directory)
     except ManagementError:
         account_log = None  # Logs matter most when the configuration is broken.
+        trace_path = Path(trace_dir) if trace_dir else None
     # The supervisor writes every component's output next to the account event log.
-    logs = LogReader(log_dir or (account_log.parent if account_log else RUNTIME_DIR), fallback=account_log)
+    logs = LogReader(log_dir or (account_log.parent if account_log else RUNTIME_DIR), fallback=account_log,
+                     problems=trace_path/PROBLEM_FILE if trace_path else None)
+    traces = TraceReader(trace_path)
     services = services or ServiceManager()
     operations = Operations(services,repository)
     sessions = Sessions(password)
@@ -130,7 +137,7 @@ def create_app(root, password, *, services=None, demo=False, static_dir=None, al
         catalog.close()
 
     app = FastAPI(title='WXBridge Console', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.repository, app.state.operations, app.state.logs = repository, operations, logs
+    app.state.repository, app.state.operations, app.state.logs, app.state.traces = repository, operations, logs, traces
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or ['localhost','127.0.0.1','[::1]'])
 
     @app.get('/healthz')
@@ -212,6 +219,22 @@ def create_app(root, password, *, services=None, demo=False, static_dir=None, al
     @app.get('/api/logs')
     def get_logs(source: str='all', level: str='all', q: str='', limit: int=200):
         return logs.query(source,level,q,limit)
+
+    @app.get('/api/trace')
+    def list_trace(instance: str='', role: str='', task: int|None=None, run: str='', problems: bool=False,
+                   q: str='', limit: int=100, before: int|None=None):
+        return traces.list(instance,role,task,run,problems,q,limit,before)
+
+    @app.get('/api/trace/locate')
+    def locate_trace(instance: str, role: str, task: int, at: float|None=None):
+        return traces.locate(instance,role,task,at)
+
+    @app.get('/api/trace/{job_id}')
+    def get_trace(job_id: int):
+        value = traces.get(job_id)
+        if value['available'] and value['job'] is None:
+            raise ManagementError('trace_not_found','没有找到这条追踪记录，可能已被清理。',404)
+        return value
 
     @app.get('/api/config/schema')
     def config_schema():

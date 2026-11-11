@@ -1,3 +1,5 @@
+import type { TraceRef } from "./traceModel";
+
 export type LogLevel = "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
 export type LogFilter = "all" | "warning" | "error";
 
@@ -11,6 +13,8 @@ export interface LogEntry {
   detail: string;
   count: number;
   hidden: boolean;
+  /** Set when the line is about a model task that may have a recorded trace. */
+  trace?: TraceRef | null;
 }
 
 export const logSources: { id: string; label: string }[] = [
@@ -21,6 +25,8 @@ export const logSources: { id: string; label: string }[] = [
   { id: "web", label: "管理台" },
   { id: "recovery", label: "自动恢复" },
   { id: "supervisor", label: "主控" },
+  // The bot's warnings and errors kept across restarts (only while 调试追踪 is on).
+  { id: "problems", label: "历史问题" },
 ];
 
 export const sourceLabel = (id: string) =>

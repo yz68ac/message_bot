@@ -342,8 +342,11 @@ class JobTrace:
             calls.append(call)
         return calls
 
-    def finish(self, *, kind, ok, result=None, exc=None, context=None):
-        """Write the job row. Called once, from the model lane thread; never raises."""
+    def finish(self, *, kind, ok, result=None, exc=None, context=None, elapsed_ms=None):
+        """Write the job row. Called once, from the model lane thread; never raises.
+
+        elapsed_ms defaults to the wall time since the job was created; seeded demo data passes its own.
+        """
         try:
             calls = self._calls()
             error = '' if ok else (getattr(exc, 'code', None) or (type(exc).__name__ if exc else '') or 'failed')
@@ -365,7 +368,7 @@ class JobTrace:
                 ts=self.started, run_id=RUN_ID, instance=self.meta.get('instance', ''), role=self.meta.get('role', JOB_ROLES.get(kind, kind)),
                 task=self.meta.get('task'), version=self.meta.get('version'), attempt=self.meta.get('attempt'),
                 meta=json.dumps(sanitize(meta), ensure_ascii=False), ok=int(bool(ok)), error=str(error), traceback=trace,
-                model=str(last.get('model') or ''), elapsed_ms=round((time.time()-self.started)*1000, 2),
+                model=str(last.get('model') or ''), elapsed_ms=round((time.time()-self.started)*1000, 2) if elapsed_ms is None else elapsed_ms,
                 tokens_in=tokens('prompt_tokens'), tokens_out=tokens('completion_tokens'),
                 finish=str(last.get('finish_reason') or ''), calls_n=len(calls), summary=summary, result=text,
                 context=context_json, calls=blob, size=len(blob)+len(text)+len(trace)+len(summary)+len(context_json)))

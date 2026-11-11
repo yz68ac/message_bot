@@ -85,6 +85,7 @@ SUITES = {
         'test_web_console',
         'test_web_logs',
         'test_web_models',
+        'test_web_trace',
     ),
 }
 

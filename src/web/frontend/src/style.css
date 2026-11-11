@@ -2360,3 +2360,339 @@ button.text-link:hover {
     opacity: 1;
   }
 }
+
+/* ---- 对话追踪 */
+.trace-select {
+  width: 140px;
+}
+
+.trace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.trace-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+  padding: 10px 22px 10px 19px;
+  border: 0;
+  border-top: 1px solid var(--ui-border-soft);
+  border-left: 3px solid transparent;
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: var(--ui-text);
+  cursor: pointer;
+}
+
+.trace-list li:first-child .trace-row {
+  border-top: 0;
+}
+
+.trace-row:hover,
+.trace-row.selected {
+  background: var(--ui-surface-hover);
+}
+
+.trace-row.bad {
+  border-left-color: var(--ui-danger);
+  background: color-mix(in srgb, var(--ui-danger-soft) 45%, transparent);
+}
+
+.trace-row time,
+.trace-msg-head time {
+  flex-shrink: 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.trace-instance,
+.trace-task,
+.trace-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.trace-summary {
+  flex: 1 1 100%;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ui-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-more {
+  padding: 12px 22px;
+  text-align: center;
+  border-top: 1px solid var(--ui-border-soft);
+}
+
+.trace-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 24px;
+}
+
+.trace-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.trace-attempts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ui-muted);
+}
+
+.trace-chip {
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--ui-secondary);
+  cursor: pointer;
+}
+
+.trace-chip.current {
+  border-color: var(--ui-accent-border);
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+
+.trace-chip.bad:not(.current) {
+  color: var(--ui-danger);
+}
+
+.trace-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.trace-facts dt {
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.trace-facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.trace-block {
+  padding: 12px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  background: var(--ui-surface);
+}
+
+.trace-block.bad {
+  border-color: var(--ui-danger-border);
+  background: var(--ui-danger-soft);
+}
+
+.trace-block h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.trace-block h3 small {
+  margin-left: 8px;
+  font-weight: 400;
+  color: var(--ui-muted);
+}
+
+.trace-block p {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.trace-sub {
+  margin: 4px 0;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.trace-sub.warn {
+  color: var(--ui-warning);
+}
+
+.trace-msg {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--ui-border-hover);
+  border-radius: 4px;
+  background: var(--ui-surface-soft);
+}
+
+.trace-msg.role-system {
+  border-left-color: var(--ui-muted);
+}
+
+.trace-msg.role-user {
+  border-left-color: var(--ui-accent);
+}
+
+.trace-msg.role-assistant {
+  border-left-color: var(--ui-success);
+}
+
+.trace-msg.role-tool {
+  border-left-color: var(--ui-warning);
+}
+
+.trace-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.trace-role {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ui-secondary);
+}
+
+.trace-id {
+  font-size: 10px;
+  color: var(--ui-muted);
+}
+
+.trace-text,
+.trace-fold pre,
+.trace-call pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.trace-fold {
+  margin-top: 6px;
+}
+
+.trace-fold summary {
+  font-size: 11px;
+  color: var(--ui-accent);
+  cursor: pointer;
+}
+
+.trace-call {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.chat-rows {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.chat-rows li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 3px 0;
+  border-top: 1px solid var(--ui-border-soft);
+}
+
+.chat-rows li:first-child {
+  border-top: 0;
+}
+
+.chat-rows.fresh li {
+  background: var(--ui-accent-soft);
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.chat-id,
+.chat-time {
+  flex-shrink: 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
+.chat-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-extra {
+  flex: 1 1 100%;
+  font-size: 10px;
+  color: var(--ui-muted);
+  overflow-wrap: anywhere;
+}
+
+.trace-event {
+  margin-top: 8px;
+}
+
+@media (max-width: 600px) {
+  .trace-select {
+    width: 100%;
+  }
+}
+
+.log-trace,
+.problem-trace {
+  flex-shrink: 0;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--ui-accent);
+  cursor: pointer;
+}
+
+.log-trace:hover,
+.problem-trace:hover,
+.problem-trace:focus-visible {
+  text-decoration: underline;
+}
+
+.trace-facts > div {
+  min-width: 0;
+}
+
+/* A long outcome ("模型返回了空回复（empty_reply）") wraps instead of widening the drawer. */
+.trace-facts .el-tag {
+  max-width: 100%;
+  height: auto;
+  padding: 2px 8px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

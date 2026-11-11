@@ -175,6 +175,25 @@ class StoreTests(TempCase):
         self.assertEqual([row['task'] for row in self.rows('SELECT task FROM jobs')], [9])
 
 
+class JobTraceTests(TestCase):
+    def test_elapsed_time_defaults_to_the_wall_clock_and_can_be_given(self):
+        store = Mock()
+        given = trace.JobTrace(store, dict(instance='alpha', role='reply'))
+        given.finish(kind='generate', ok=True, result=dict(reply='好'), elapsed_ms=12.5)
+        self.assertEqual(store.submit.call_args.args[1]['elapsed_ms'], 12.5)
+        measured = trace.JobTrace(store, dict(instance='alpha', role='reply'))
+        measured.started -= 2
+        measured.finish(kind='generate', ok=True, result=dict(reply='好'))
+        self.assertGreaterEqual(store.submit.call_args.args[1]['elapsed_ms'], 2000)
+
+    def test_finish_never_raises_even_when_the_store_does(self):
+        store = Mock()
+        store.submit.side_effect = RuntimeError('boom')
+        recorder = trace.JobTrace(store, dict(instance='alpha', role='reply'))
+        with self.assertLogs('wxbridge.trace', 'WARNING'):
+            recorder.finish(kind='generate', ok=False, exc=KeyError('x'))
+
+
 class RecordedModelTests(TempCase):
     def runtime(self, cfg, generate):
         def create(*args, **kwargs):

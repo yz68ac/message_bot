@@ -14,6 +14,7 @@ import {
   CircleCheck,
   Clock,
   Document,
+  Tickets,
 } from "@element-plus/icons-vue";
 import { api } from "./api";
 import { useConsoleSession } from "./composables/useConsoleSession";
@@ -22,7 +23,9 @@ import PromptEditor from "./components/PromptEditor.vue";
 import AccountSetup from "./components/AccountSetup.vue";
 import AccountSettings from "./components/AccountSettings.vue";
 import LogViewer from "./components/LogViewer.vue";
+import TraceViewer from "./components/TraceViewer.vue";
 import { entryTime, levelLabel, levelTag, sourceLabel, type LogFilter } from "./logModel";
+import { locateQuery, pageOfHash, traceHash, traceRouteOfHash, type TraceRef, type TraceRoute } from "./traceModel";
 import { authorizeAction } from "./setupModel";
 import { runServiceAction, runningOperation, type ServiceAction } from "./serviceActions";
 import { blockedText, errorText, instanceStatus } from "./instanceModel";
@@ -46,14 +49,17 @@ const pages = [
   },
   { id: "prompts", name: "系统提示词", subtitle: "PROMPTS", icon: EditPen },
   { id: "logs", name: "运行日志", subtitle: "LOGS", icon: Document },
+  { id: "trace", name: "对话追踪", subtitle: "TRACE", icon: Tickets },
   { id: "services", name: "服务管理", subtitle: "SERVICES", icon: Setting },
 ];
 // The page lives in the URL hash so reload, back/forward and bookmarks keep it.
+// The trace page also keeps its open record and preset filters there: #/trace?id=2&task=11
 function pageFromHash() {
-  const id = window.location.hash.replace(/^#\/?/, "");
+  const id = pageOfHash(window.location.hash);
   return pages.some((item) => item.id === id) ? id : "overview";
 }
 const page = ref(pageFromHash());
+const traceRoute = ref<TraceRoute>(traceRouteOfHash(window.location.hash));
 const logPreset = ref<{ source: string; level: LogFilter }>({ source: "all", level: "all" });
 const problems = computed(() => snapshot.value?.problems);
 function openLogs(level: LogFilter = "warning", source = "all") {
@@ -245,8 +251,35 @@ async function navigate(id: string) {
   page.value = id;
   if (pageFromHash() !== id) window.location.hash = `#/${id}`;
 }
+// The record the trace page shows follows the address, including back/forward between records.
+async function openTrace(route: TraceRoute) {
+  traceRoute.value = route;
+  await navigate("trace");
+  // replaceState does not fire hashchange; the viewer reacts to the changed route itself.
+  if (page.value === "trace") history.replaceState(null, "", traceHash(route));
+}
+function onTraceOpen(id: number | null) {
+  traceRoute.value = { ...traceRoute.value, id: id ?? undefined };
+  history.replaceState(null, "", traceHash(traceRoute.value));
+}
+/** From a log line or a problem row: find the recorded job for that task, then open it. */
+async function openTraceFor(ref: TraceRef, at?: number | null) {
+  try {
+    const found = await api(locateQuery(ref, at));
+    if (found.id != null) await openTrace({ id: found.id });
+    else
+      ElMessage.info(
+        found.available
+          ? "没有找到这条日志对应的追踪记录：可能已被清理，或该实例没有开启“保存提示词与模型回复”。"
+          : "还没有追踪记录。",
+      );
+  } catch (e: any) {
+    fail(e);
+  }
+}
 async function followHash() {
   const id = pageFromHash(), before = page.value;
+  traceRoute.value = traceRouteOfHash(window.location.hash);
   if (id === before) return;
   await navigate(id);
   // An unsaved-edit guard kept the page; put the address back to match it.
@@ -354,7 +387,7 @@ onBeforeUnmount(() => {
           :aria-label="item.name"
           :title="item.name"
           :class="{ selected: page === item.id }"
-          @click="item.id === 'logs' ? openLogs('all') : navigate(item.id)"
+          @click="item.id === 'logs' ? openLogs('all') : item.id === 'trace' ? openTrace({}) : navigate(item.id)"
         >
           <el-icon><component :is="item.icon" /></el-icon
           ><span>{{ item.name }}</span
@@ -435,7 +468,9 @@ onBeforeUnmount(() => {
                       ? "让回复更像你希望的样子。"
                       : page === "logs"
                         ? "各组件的运行输出、警告与错误，出问题时先看这里。"
-                        : "管理机器人生命周期，保留微信登录会话。"
+                        : page === "trace"
+                          ? "发给模型的完整提示词、模型的原始回复和出错详情，重启后仍可查看。"
+                          : "管理机器人生命周期，保留微信登录会话。"
               }}
             </p>
           </div>
@@ -650,6 +685,16 @@ onBeforeUnmount(() => {
                 <span class="problem-source">{{ sourceLabel(item.source) }}</span>
                 <code>{{ item.text }}</code>
                 <span v-if="item.count > 1" class="log-count">×{{ item.count }}</span>
+                <!-- A span, not a button: this row is already a button. -->
+                <span
+                  v-if="item.trace"
+                  class="problem-trace"
+                  role="button"
+                  tabindex="0"
+                  @click.stop="openTraceFor(item.trace, item.at)"
+                  @keydown.enter.stop.prevent="openTraceFor(item.trace, item.at)"
+                  >查看追踪</span
+                >
                 <time>{{ entryTime(item) }}</time>
               </button>
             </template>
@@ -814,7 +859,10 @@ onBeforeUnmount(() => {
           :source="logPreset.source"
           :level="logPreset.level"
           @error="fail"
+          @trace="(entry) => entry.trace && openTraceFor(entry.trace, entry.at)"
         />
+
+        <TraceViewer v-else-if="page === 'trace'" :route="traceRoute" @open="onTraceOpen" @error="fail" />
 
         <PromptEditor v-else-if="page === 'prompts'" ref="promptEditor" :instances="instances" @saved="refresh" @error="fail" />
 

@@ -127,6 +127,37 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual((problems['count'],problems['errors']),(3,1))
         self.assertEqual(problems['by_source'],{'bot':2,'supervisor':1})
 
+    def test_trace_requires_a_session_and_serves_the_demo_records(self):
+        self.assertEqual(self.client.get('/api/trace').status_code,401)
+        self.assertEqual(self.client.get('/api/trace/1').status_code,401)
+        self.assertEqual(self.client.get('/api/trace/locate',params={'instance':'private_demo','role':'reply','task':11}).status_code,401)
+        self.login()
+        page=self.client.get('/api/trace').json()
+        self.assertEqual((page['available'],page['total'],page['instances']),(True,3,['private_demo']))
+        self.assertEqual([row['id'] for row in self.client.get('/api/trace',params={'problems':'true'}).json()['rows']],[1])
+        detail=self.client.get('/api/trace/2').json()
+        self.assertEqual((detail['job']['task'],detail['job']['attempt'],len(detail['job']['calls'])),(11,2,2))
+        self.assertEqual([item['kind'] for item in detail['events']],['reply_failed','reply_final'])
+        self.assertEqual(self.client.get('/api/trace/999').status_code,404)
+        self.assertEqual(self.client.get('/api/trace',params={'role':'admin'}).status_code,400)
+        self.assertEqual(self.client.get('/api/trace',params={'instance':'../config'}).status_code,400)
+        self.assertEqual(self.client.get('/api/trace',params={'limit':'many'}).status_code,422)
+        self.assertEqual(self.client.get('/api/trace/abc').status_code,422)
+        located=self.client.get('/api/trace/locate',params={'instance':'private_demo','role':'reply','task':11}).json()
+        self.assertEqual(located['id'],2)
+        self.assertEqual(self.client.get('/api/trace/locate',params={'instance':'../x','role':'reply','task':1}).status_code,400)
+
+    def test_persistent_problems_are_a_log_source_that_does_not_change_the_counts(self):
+        self.login()
+        rows=self.client.get('/api/logs',params={'source':'problems'}).json()['entries']
+        self.assertEqual({row['source'] for row in rows},{'problems'})
+        self.assertIn("KeyError: 'reply'",next(row['detail'] for row in rows if row['detail']))
+        self.assertIn(11,[row['trace']['task'] for row in rows if row['trace']])
+        overview=self.client.get('/api/overview').json()['problems']
+        self.assertEqual((overview['count'],overview['errors']),(3,1))
+        self.assertEqual(overview['by_source'],{'bot':2,'supervisor':1})
+        self.assertTrue(any(row['trace'] and row['trace']['task']==11 for row in overview['latest']))
+
     def test_health_is_public_and_contains_no_private_state(self):
         response=self.client.get('/healthz')
         self.assertEqual(response.status_code,200)

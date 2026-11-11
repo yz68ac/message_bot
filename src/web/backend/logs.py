@@ -23,6 +23,10 @@ RUNTIME_DIR = Path('/run/wxbridge-trial')
 FILES = {BOT: 'bot-live.log', SESSION: 'session-supervisor.log', HELPER: 'sender.log',
          WEB: 'web.log', RECOVERY: 'recovery.log', SUPERVISOR: 'supervisor.log'}
 SOURCES = tuple(FILES)
+# The bot's warnings and errors kept across restarts (trace directory). Selectable on its own, but not part of
+# "all" or the problem counts: the same lines are also in the live bot log.
+PROBLEMS = 'problems'
+SELECTABLE = (*SOURCES, PROBLEMS)
 # The web console and the supervisor never see chat text; the other components may.
 PUBLIC = frozenset((WEB, SUPERVISOR))
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40, 'CRITICAL': 50}
@@ -181,6 +185,28 @@ def collapse(entries):
     return result
 
 
+REPLY_EVENTS = ('开始生成', '生成结束', '生成失败', '生成未启动', '废弃生成', '搜索提示待发送', '发送意图', '发送确认',
+                '发送操作', '模型结束原因')
+MEMORY_EVENTS = ('记忆延后', '记忆更新')
+MODEL_FAILURES = ('模型调用失败', '模型任务异常')
+KIND_ROLES = dict(generate='reply', memory='memory', participation='participation', group_profile='group_profile')
+
+
+def trace_ref(message):
+    """Which model task a line is about, when a trace may exist for it.
+
+    Memory record ids share the ``task=`` field with reply tasks, so only events whose role is known get a link.
+    """
+    fields = dict(FIELD.findall(message))
+    task, instance = fields.get('task', ''), fields.get('instance', '')
+    if not task.isdigit() or not instance:
+        return None
+    name = re.split(r'[\s，,:：]', message.strip(), maxsplit=1)[0]
+    role = (KIND_ROLES.get(fields.get('kind')) if name in MODEL_FAILURES
+            else 'reply' if name in REPLY_EVENTS else 'memory' if name in MEMORY_EVENTS else None)
+    return dict(instance=instance, role=role, task=int(task)) if role else None
+
+
 def present(entry, source):
     full = source in PUBLIC or LEVELS[entry['level']] >= 30
     detail = entry['detail']
@@ -189,18 +215,21 @@ def present(entry, source):
     detail = clean('\n'.join(detail).rstrip('\n'), MAX_DETAIL_CHARS) if full else ''
     return dict(source=source, level=entry['level'], at=entry['at'], stamp=entry['stamp'], approx=entry['approx'],
                 text=clean(entry['message']) if full else project(entry['message'], not entry['raw']),
-                detail=detail, count=entry['count'], hidden=not full)
+                detail=detail, count=entry['count'], hidden=not full, trace=trace_ref(entry['message']))
 
 
 class LogReader:
     """Reads only fixed file names in one runtime directory and caches each parse."""
 
-    def __init__(self, directory, fallback=None):
+    def __init__(self, directory, fallback=None, problems=None):
         self.directory = Path(directory)
         self.fallback = Path(fallback) if fallback else None
+        self.problems_path = Path(problems) if problems else None
         self.lock, self.cache, self.summary = threading.Lock(), {}, None
 
     def path(self, source):
+        if source == PROBLEMS:
+            return self.problems_path or self.directory/'problems.log'
         path = self.directory/FILES[source]
         if source == BOT and self.fallback and not os.path.lexists(path):
             return self.fallback  # Without the supervisor the bot only writes its event log.
@@ -236,7 +265,7 @@ class LogReader:
         return [], info
 
     def query(self, source='all', level='all', q='', limit=200):
-        if source != 'all' and source not in FILES:
+        if source != 'all' and source not in SELECTABLE:
             raise ManagementError('invalid_log_source', '不支持的日志来源。', 400)
         if level not in FILTERS:
             raise ManagementError('invalid_log_level', '不支持的日志级别。', 400)
@@ -283,6 +312,6 @@ class LogReader:
         rows.sort(key=lambda row: row['at'])
         recent = [dict(source=row['source'], level=row['level'], stamp=row['stamp'], approx=row['approx'],
                        at=row['at'], text=row['text'].splitlines()[0][:200] if row['text'] else '',
-                       count=row['count']) for row in reversed(rows[-latest:])]
+                       count=row['count'], trace=row['trace']) for row in reversed(rows[-latest:])]
         return dict(count=sum(counts.values()), errors=sum(row['count'] for row in rows if LEVELS[row['level']] >= 40),
                     by_source=counts, latest=recent, read_errors=errors, window_seconds=window)

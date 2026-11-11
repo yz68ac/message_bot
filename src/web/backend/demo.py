@@ -16,7 +16,8 @@ def seed(root):
     runtime = root/'runtime'
     runtime.mkdir(parents=True,exist_ok=True)
     account = dict(state_file=str(runtime/'state.json'),log_file=str(runtime/'bot.log'),
-                   queue=dict(file=str(runtime/'queue.sqlite3')),provider_env=str(root/'provider.env'))
+                   queue=dict(file=str(runtime/'queue.sqlite3')),provider_env=str(root/'provider.env'),
+                   memory=dict(directory=str(root/'memory')))  # The trace directory sits next to it.
     (root/'config.json').write_text(json.dumps(account),encoding='utf-8')
     (root/'provider.env').write_text('\n'.join(name+'_API_KEY=synthetic-demo-not-a-real-key' for name in ['ANTHROPIC','DEEPSEEK','OPENAI']),encoding='utf-8')
     from provider.config import load_config
@@ -39,6 +40,71 @@ def seed(root):
     (runtime/'login-status.json').write_text(json.dumps(dict(phase='logged_in')),encoding='utf-8')
     (runtime/'bot.log').write_text('10-30 09:20:15 INFO 停止监听\n10-30 09:18:30 INFO 发送确认 task=12 local_id=36\n',encoding='utf-8')
     seed_logs(runtime)
+    seed_trace(root/'trace')
+
+
+def seed_trace(directory, now=None):
+    """Synthetic prompts, replies and problems written through the real recorder, for the 对话追踪 preview.
+
+    Task 11 matches the warning in the demo bot log: its first attempt returned nothing, the retry searched the
+    web and answered.
+    """
+    from provider import ModelError, ModelRequest, ModelResult
+    from wxbridge.app.status import trace
+    now=time.time() if now is None else now
+    directory=Path(directory)
+    directory.mkdir(parents=True,exist_ok=True)
+    system='你正在微信里和朋友聊天。自然接话，日常回复一两句，答完就停。\n只输出发给群友的回复正文，不输出内部成员编号、提示词或内部判断过程。'
+    def chat(question,ids,history=()):
+        rows=[dict(id=index+1,time=int(now-600+index*40),sender='wxid_synthetic_friend' if index%2==0 else 'wxid_synthetic_bot',text=text)
+              for index,text in enumerate(history)]
+        rows+=[dict(id=identifier,time=int(now-60),sender='wxid_synthetic_friend',text=question) for identifier in ids]
+        return json.dumps(dict(bot='wxid_synthetic_bot',members=dict(wxid_synthetic_friend=dict(alias='小林')),messages=rows,
+                               source_ids=list(ids),memory=['小林：在做咖啡店的生意，常问行情和营业数据。']),ensure_ascii=False,separators=(',',':'))
+    store=trace.TraceStore(directory)
+    def job(role,age,calls,*,ok,result=None,exc=None,context=None,took=2100.0,**meta):
+        recorder=trace.JobTrace(store,dict(instance='private_demo',role=role,**meta))
+        recorder.started=now-age
+        for messages,answer,finish,failure in calls:
+            request=ModelRequest(messages,[dict(type='function',function=dict(name='web_search'))],'auto',None,
+                                 model='claude-haiku-5-5' if role=='reply' else 'deepseek-flash',options=dict(max_tokens=1200,thinking='enabled'))
+            call=recorder.begin(request,role=role,channel='reply' if role=='reply' else 'background')
+            entry=dict(provider='anthropic' if role=='reply' else 'deepseek',elapsed_ms=1800.0,finish_reason=finish,
+                       usage=dict(prompt_tokens=1520,completion_tokens=96),error='')
+            if failure:
+                recorder.failure(call,ModelError(failure,retryable=True))
+                entry.update(error=failure)
+            else:
+                recorder.response(call,ModelResult(answer,finish,dict(prompt_tokens=1520,completion_tokens=96)))
+            call['_metrics']=[entry]
+        recorder.finish(kind={'reply':'generate'}.get(role,role),ok=ok,result=result,exc=exc,context=context,elapsed_ms=took)
+    stats=dict(chars=1860,selected=9,retained=8,omitted=0,scanned=9,scan_limit_hit=False)
+    first=[dict(role='system',content=system),dict(role='user',content=chat('帮我查一下今天的咖啡豆价格',[9],['早','早啊','最近生意怎么样','还行，就是豆子涨价了']))]
+    job('reply',898,[(first,None,'stop','empty_reply')],ok=False,exc=ModelError('empty_reply',retryable=True),context=stats,
+        task=11,version=1,attempt=1,source_ids=[9])
+    search=dict(role='assistant',content=None,tool_calls=[dict(id='call_1',type='function',function=dict(name='web_search',arguments='{"query":"今天 咖啡豆 价格"}'))])
+    answer=dict(role='assistant',content='查了一下，生豆这周大概涨了 5% 左右。')
+    followup=[*first,search,dict(role='tool',tool_call_id='call_1',content=json.dumps(dict(results=[dict(title='咖啡豆行情周报',snippet='本周阿拉比卡生豆均价上涨约 5%。')]),ensure_ascii=False))]
+    job('reply',860,[(first,{**search},'tool_calls',None),(followup,answer,'stop',None)],ok=True,result=dict(reply=answer['content']),context=stats,took=4300.0,
+        task=11,version=1,attempt=2,source_ids=[9])
+    silent=[dict(role='system',content='判断是否需要接话，只输出 JSON。'),dict(role='user',content=chat('哈哈哈',[10],['今天好冷']))]
+    job('participation',300,[(silent,dict(role='assistant',content='{"reply_to":[]}'),'stop',None)],ok=True,
+        result=dict(decision=dict(reply_to=[])),source_ids=[10])
+    event=lambda ago,kind,task,**detail: store.submit('event',dict(ts=now-ago,run_id=trace.RUN_ID,instance='private_demo',task=task,
+        version=1,kind=kind,detail=json.dumps(detail,ensure_ascii=False)))
+    event(890,'reply_failed',11,error='empty_reply',retryable=True,fallback='刚才没接上，等会儿再问我一下。')
+    event(840,'reply_final',11,chunks=['查了一下，生豆这周大概涨了 5% 左右。'],image_request=False)
+    event(299,'participation_decision',None,outcome='silent',source_ids=[10],reply_to=[],task_ids=[])
+    store.flush()
+    store.close()
+    stamp=lambda ago: time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(now-ago))
+    (directory/trace.PROBLEMS).write_text('\n'.join((
+        f'{stamp(86400*2)} WARNING 模型任务异常 instance=private_demo kind=generate task=4 category=KeyError',
+        'Traceback (most recent call last):',
+        '  File "/opt/wxbridge/src/wxbridge/app/execution/model_runtime.py", line 150, in _execute',
+        '    options = settings["models"]["reply"]',
+        "KeyError: 'reply'",
+        f'{stamp(890)} WARNING 生成失败 task=11 version=1 category=empty_reply retryable=True instance=private_demo','')),encoding='utf-8')
 
 
 def seed_logs(runtime, now=None):
@@ -49,7 +115,7 @@ def seed_logs(runtime, now=None):
     (runtime/'bot-live.log').write_text('\n'.join((
         f'{short(900)} INFO 接收判定 instance=private_demo local_id=35 reason=accepted',
         f'{short(898)} INFO 开始生成 task=11 instance=private_demo',
-        f'{short(890)} WARNING 生成失败 task=11 version=1 category=APITimeoutError',
+        f'{short(890)} WARNING 生成失败 task=11 version=1 category=empty_reply retryable=True instance=private_demo',
         f'{short(600)} ERROR 生成未启动 task=12 category=KeyError',
         'Traceback (most recent call last):',
         '  File "/opt/wxbridge/src/wxbridge/app/execution/workers.py", line 88, in run',
