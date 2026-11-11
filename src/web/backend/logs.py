@@ -13,6 +13,7 @@ import re
 import threading
 import time
 
+from wxbridge.app.status.redact import clean  # Also imported from here by the trace reader and tests.
 from wxbridge.app.status.snapshot import EVENTS, read_bytes
 from wxbridge.control import BOT, HELPER, RECOVERY, SESSION, WEB
 from wxbridge.management.repository import ManagementError
@@ -32,7 +33,7 @@ PUBLIC = frozenset((WEB, SUPERVISOR))
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARNING': 30, 'ERROR': 40, 'CRITICAL': 50}
 FILTERS = {'all': 0, 'warning': 30, 'error': 40}
 WINDOW = 512 * 1024
-MAX_TEXT, MAX_DETAIL_LINES, MAX_DETAIL_CHARS = 2000, 160, 20000
+MAX_DETAIL_LINES, MAX_DETAIL_CHARS = 160, 20000
 
 _LEVEL = r'(DEBUG|INFO|WARNING|ERROR|CRITICAL)'
 SHORT = re.compile(r'^(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) '+_LEVEL+r' ?(.*)$')
@@ -48,26 +49,6 @@ KEYS = re.compile(r'instance|task|version|chunks|images|questions|references|par
                   r'|round|rounds|depth|size|limit|cursor|workers|intentional|finish|native_finish|elapsed'
                   r'|[a-z]+_(?:id|count|seconds|ms|chars|code|reason|state|phase|error|kind|mode|limit|size|index)')
 FIELD = re.compile(r'(?<![\w.])([A-Za-z_][A-Za-z0-9_]{0,31})=([A-Za-z0-9_.:/@+-]{1,96})(?=[\s,，]|$)')
-CONTROL = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07?|[\x00-\x08\x0b-\x1f\x7f]')
-SECRETS = (
-    (re.compile(r'(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}'), r'\1 [已隐藏]'),
-    (re.compile(r'(?i)\b((?:x-)?(?:goog-)?api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd'
-                r'|authorization|cookie|session)(["\']?\s*[:=]\s*["\']?)[^\s"\'&,;]+'), r'\1\2[已隐藏]'),
-    (re.compile(r'(?i)([?&](?:key|sig|signature|token|access_token|api_key|auth)=)[^&\s"\']+'), r'\1[已隐藏]'),
-    (re.compile(r'\b(?:sk-(?:ant-)?|gh[pousr]_|github_pat_|xox[abprs]-|AIza)[A-Za-z0-9_-]{8,}'), '[密钥已隐藏]'),
-    (re.compile(r'\b[0-9a-fA-F]{32,}\b'), '[长串已隐藏]'),
-)
-# Token-like runs mix digits with both letter cases; identifiers and paths do not.
-TOKEN = re.compile(r'[A-Za-z0-9+_-]{40,}={0,2}')
-
-
-def clean(value, limit=MAX_TEXT):
-    value = CONTROL.sub('', value).replace('\t', '    ')
-    for pattern, replacement in SECRETS:
-        value = pattern.sub(replacement, value)
-    value = TOKEN.sub(lambda match: '[长串已隐藏]' if all(re.search(kind, match.group()) for kind in ('[0-9]', '[a-z]', '[A-Z]'))
-                      else match.group(), value)
-    return value if len(value) <= limit else value[:limit]+'…'
 
 
 def stamp_time(match, now):

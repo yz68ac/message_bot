@@ -17,6 +17,7 @@ from tests.support.model_support import default_config
 from wxbridge.app.execution.model_runtime import ConversationModels
 from wxbridge.app.status import trace
 from wxbridge.app.status.logging_context import problem_file
+from wxbridge.app.status.redact import clean
 from wxbridge.app.status.trace import TraceStore, decode_calls, record_event, sanitize, summarize, trace_directory
 
 TEMP = Path(__file__).resolve().parents[1]/'.test-tmp'
@@ -173,6 +174,30 @@ class StoreTests(TempCase):
         with self.assertLogs('wxbridge.trace', 'WARNING'):
             self.assertTrue(store.flush())
         self.assertEqual([row['task'] for row in self.rows('SELECT task FROM jobs')], [9])
+
+
+class MaskingTests(TestCase):
+    def test_provider_text_is_masked_before_it_is_recorded(self):
+        secret = 'sk-ant-api03-'+'Q'*24
+        error = ModelError('connection_failed', detail=f'ProxyError proxy http://user:hunter2@127.0.0.1:10808 refused; Authorization: Bearer {secret}')
+        call = {}
+        trace.JobTrace.failure(call, error)
+        text = call['error_detail']
+        for leaked in (secret, 'hunter2', 'user:'):
+            self.assertNotIn(leaked, text)
+        self.assertIn('127.0.0.1:10808', text)
+        self.assertIn('已隐藏', text)
+        self.assertEqual(call['error'], 'connection_failed')
+
+    def test_urls_without_credentials_and_plain_words_are_left_alone(self):
+        text = 'GET https://api.example.test/v1/messages: 429 rate limited, retry after 3s'
+        self.assertEqual(clean(text), text)
+        self.assertEqual(clean('http://user:pw@host/x'), 'http://[已隐藏]@host/x')
+
+    def test_detail_longer_than_the_limit_is_cut(self):
+        call = {}
+        trace.JobTrace.failure(call, ModelError('http_500', detail='x '*2000))
+        self.assertLessEqual(len(call['error_detail']), 1001)
 
 
 class JobTraceTests(TestCase):

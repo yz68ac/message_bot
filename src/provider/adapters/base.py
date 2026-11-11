@@ -5,10 +5,25 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+MAX_DETAIL = 600
+
+
 class ModelError(RuntimeError):
-    def __init__(self, code, *, retryable=False, status=None):
+    """A failed model call. str(error) is the bare code and never contains provider text.
+
+    ``detail`` holds a short excerpt of what the provider said, for diagnostics only. It is not masked here;
+    whoever stores or shows it must (the bot's trace recorder does).
+    """
+
+    def __init__(self, code, *, retryable=False, status=None, detail=''):
         super().__init__(code)
-        self.code, self.retryable, self.status = code, retryable, status
+        self.code, self.retryable, self.status, self.detail = code, retryable, status, detail
+
+
+def error_detail(*parts, limit=MAX_DETAIL):
+    """One short line out of provider or exception text."""
+    text = ' '.join(' '.join(str(part).split()) for part in parts if part)
+    return text if len(text) <= limit else text[:limit]+'…'
 
 
 @dataclass(frozen=True)

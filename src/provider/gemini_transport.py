@@ -1,7 +1,7 @@
 """Caller-owned Google Gen AI SDK transport; no retries or automatic tool execution."""
 from copy import deepcopy
 
-from .adapters.base import ModelError
+from .adapters.base import ModelError, error_detail
 
 
 def create_gemini_client(base_url, api_key, *, proxy_url=None):
@@ -21,11 +21,12 @@ def map_gemini_error(exc):
     if isinstance(exc, errors.APIError):
         status = exc.code
         if type(status) is int:
-            return ModelError('http_'+str(status), retryable=status in (408,429) or status >= 500, status=status)
-        return ModelError('invalid_response')
+            return ModelError('http_'+str(status), retryable=status in (408,429) or status >= 500, status=status,
+                              detail=error_detail(getattr(exc, 'status', ''), getattr(exc, 'message', '')))
+        return ModelError('invalid_response', detail=error_detail(type(exc).__name__, getattr(exc, 'message', '')))
     if isinstance(exc, (httpx.TransportError, TimeoutError, OSError)):
-        return ModelError('connection_failed', retryable=True)
-    return ModelError('invalid_response')
+        return ModelError('connection_failed', retryable=True, detail=error_detail(type(exc).__name__, exc))
+    return ModelError('invalid_response', detail=error_detail(type(exc).__name__, exc))
 
 
 def send_gemini_content(client, payload, timeout):

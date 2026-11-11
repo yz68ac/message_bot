@@ -21,6 +21,8 @@ import traceback as traceback_module
 import uuid
 import zlib
 
+from wxbridge.app.status.redact import clean
+
 log = logging.getLogger('wxbridge.trace')
 
 FILE = 'trace.sqlite3'
@@ -320,7 +322,7 @@ class JobTrace:
     def failure(call, exc):
         try:
             call.update(error=getattr(exc, 'code', None) or type(exc).__name__,
-                        error_detail=sanitize(getattr(exc, 'detail', '') or ''), status=getattr(exc, 'status', None))
+                        error_detail=clean(str(getattr(exc, 'detail', '') or ''), 1000), status=getattr(exc, 'status', None))
         except Exception:
             pass
 

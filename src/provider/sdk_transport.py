@@ -1,5 +1,8 @@
 """SDK transport for model providers; protocol adapters remain provider-neutral."""
+import json
+
 from .adapters import ModelError
+from .adapters.base import error_detail
 
 
 def create_sdk_client(protocol, base_url, api_key, settings, timeout):
@@ -33,17 +36,31 @@ def create_sdk_client(protocol, base_url, api_key, settings, timeout):
     return sdk, factory(**options)
 
 
+def _body_text(exc):
+    """What the provider answered: its parsed error body, or the SDK's message when there is none."""
+    body = getattr(exc, 'body', None)
+    if isinstance(body, (dict, list)):
+        try:
+            return json.dumps(body, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(body)
+    return body or getattr(exc, 'message', '')
+
+
 def map_sdk_error(sdk, exc):
     if getattr(sdk, '__name__', '') == 'google.genai':
         from .gemini_transport import map_gemini_error
         return map_gemini_error(exc)
     if isinstance(exc, sdk.APIResponseValidationError):
-        return ModelError('invalid_response')
+        return ModelError('invalid_response', detail=error_detail(type(exc).__name__, getattr(exc, 'message', '')))
     if isinstance(exc, sdk.APIStatusError):
         status = exc.status_code
-        return ModelError('http_'+str(status), retryable=status in (408, 429) or status >= 500, status=status)
+        return ModelError('http_'+str(status), retryable=status in (408, 429) or status >= 500, status=status,
+                          detail=error_detail(_body_text(exc)))
     if isinstance(exc, sdk.APIConnectionError):
-        return ModelError('connection_failed', retryable=True)
+        cause = exc.__cause__
+        return ModelError('connection_failed', retryable=True,
+                          detail=error_detail(type(cause).__name__ if cause else '', cause or getattr(exc, 'message', '')))
     return None
 
 
@@ -51,8 +68,8 @@ def _call_sdk(sdk, operation, parameters, timeout):
     try:
         response = operation(**parameters, timeout=timeout)
         return response.to_dict(mode='json', warnings=False)
-    except (AttributeError, TypeError, ValueError, UnicodeError):
-        raise ModelError('invalid_response') from None
+    except (AttributeError, TypeError, ValueError, UnicodeError) as exc:
+        raise ModelError('invalid_response', detail=error_detail(type(exc).__name__, exc)) from None
     except Exception as exc:
         mapped = map_sdk_error(sdk, exc)
         if mapped is not None:
