@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from wxbridge.app.status.trace import FILE, decode_calls
+from wxbridge.app.status.trace import FILE, RUN_STARTED, decode_calls
 from wxbridge.management.repository import ManagementError
 from web.backend.logs import clean
 
@@ -19,9 +19,11 @@ INSTANCE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}\Z')
 RUN = re.compile(r'[0-9A-Za-z-]{1,40}\Z')
 LIST_COLUMNS = ('id, ts, run_id, instance, role, task, version, attempt, ok, error, model, elapsed_ms, tokens_in, '
                 'tokens_out, finish, calls_n, summary')
-# A reply that never produced text, or a call the provider cut short, is a problem even without an exception.
+# A call the provider cut short is a problem even without an exception. An empty reply text is not one by
+# itself: a reply without text fails as empty_reply (ok=0) unless it carries an image request, which is a success.
 PROBLEM = ("(ok=0 OR error!='' OR finish IN ('length','content_filter','pause_turn','incomplete_response',"
-           "'invalid_tool_calls') OR (role='reply' AND result=''))")
+           "'invalid_tool_calls'))")
+LOG_SLACK_SECONDS = 1  # Log stamps are whole seconds, so a line can look up to a second older than its job.
 MAX_DETAIL_CHARS = 3_000_000
 
 
@@ -132,15 +134,18 @@ class TraceReader:
             related = [dict(r) for r in db.execute(
                 f'SELECT id, ts, attempt, version, ok, error FROM jobs WHERE {same} AND role=? AND task IS ? ORDER BY id',
                 (job['instance'], job['run_id'], job['role'], job['task']))] if job['task'] is not None else []
+            # Events carry no role: participation ones have no task and are matched by time and messages, and only
+            # reply events use the reply task number (memory record ids share that number space).
             if job['role'] == 'participation':
                 events = db.execute(f'SELECT * FROM events WHERE {same} AND kind LIKE ? AND ts>=? AND ts<=? ORDER BY id',
                                     (job['instance'], job['run_id'], 'participation%', job['ts']-1,
                                      job['ts']+job['elapsed_ms']/1000+30)).fetchall()
-            elif job['task'] is not None:
-                events = db.execute(f'SELECT * FROM events WHERE {same} AND task=? ORDER BY id',
-                                    (job['instance'], job['run_id'], job['task'])).fetchall()
+            elif job['role'] == 'reply' and job['task'] is not None:
+                events = db.execute(f'SELECT * FROM events WHERE {same} AND task=? AND kind LIKE ? ORDER BY id',
+                                    (job['instance'], job['run_id'], job['task'], 'reply%')).fetchall()
             else:
                 events = []
+            sources = (job['meta'] or {}).get('source_ids') if job['role'] == 'participation' else None
             parsed = []
             for event in events:
                 item = dict(event)
@@ -148,6 +153,11 @@ class TraceReader:
                     item['detail'] = json.loads(item['detail'])
                 except ValueError:
                     item['detail'] = {}
+                if not isinstance(item['detail'], dict):
+                    item['detail'] = {}
+                # Batches can run seconds apart, so the time window alone may reach a neighbour's decision.
+                if sources is not None and item['detail'].get('source_ids') not in (None, sources):
+                    continue
                 parsed.append(item)
             return dict(job=dict(job, calls=calls, truncated=truncated), related=related, events=parsed)
 
@@ -157,7 +167,8 @@ class TraceReader:
         """The job a log line is about, for links from the log page.
 
         Task ids restart with the runtime directory, so the newest job that started no later than the log line
-        wins (a few seconds of slack for the line being written just after the job was queued).
+        wins, and only within the run that was active when the line was written: a job is stored when it ends,
+        so a line about a running task must not match the same number from an earlier run.
         """
         if not INSTANCE.fullmatch(instance or '') or role not in ROLES:
             raise invalid('invalid_trace_reference', '追踪引用无效。')
@@ -165,8 +176,14 @@ class TraceReader:
         def work(db):
             limit, args = '', [instance, role, int(task)]
             if at is not None:
+                latest = float(at)+LOG_SLACK_SECONDS
                 limit = ' AND ts<=?'
-                args.append(float(at)+5)
+                args.append(latest)
+                run = db.execute('SELECT run_id FROM events WHERE instance=? AND kind=? AND ts<=? ORDER BY ts DESC, id DESC LIMIT 1',
+                                 (instance, RUN_STARTED, latest)).fetchone()
+                if run:  # Absent for data recorded before runs were marked.
+                    limit += ' AND run_id=?'
+                    args.append(run[0])
             row = db.execute(f'SELECT id FROM jobs WHERE instance=? AND role=? AND task=?{limit} ORDER BY ts DESC, id DESC LIMIT 1',
                              args).fetchone()
             return dict(id=row[0] if row else None)

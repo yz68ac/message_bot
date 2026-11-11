@@ -27,6 +27,7 @@ log = logging.getLogger('wxbridge.trace')
 
 FILE = 'trace.sqlite3'
 PROBLEMS = 'problems.log'
+RUN_STARTED = 'run_started'
 # Task ids restart from 1 when the runtime directory is wiped, so every record names its process run.
 RUN_ID = time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:4]
 KEEP_SECONDS, MAX_BYTES, PRUNE_SECONDS, QUEUE_SIZE = 14*86400, 300*1024*1024, 300, 256
@@ -42,8 +43,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     ok INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '', traceback TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '', elapsed_ms REAL NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0,
     tokens_out INTEGER NOT NULL DEFAULT 0, finish TEXT NOT NULL DEFAULT '', calls_n INTEGER NOT NULL DEFAULT 0,
-    summary TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', context TEXT NOT NULL DEFAULT '',
-    calls BLOB NOT NULL, size INTEGER NOT NULL);
+    summary TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL, result TEXT NOT NULL DEFAULT '',
+    context TEXT NOT NULL DEFAULT '', calls BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS jobs_ts ON jobs(ts);
 CREATE INDEX IF NOT EXISTS jobs_task ON jobs(instance, role, task);
 CREATE TABLE IF NOT EXISTS events (
@@ -121,7 +122,7 @@ class TraceStore:
                  prune_seconds=PRUNE_SECONDS):
         self.path = Path(directory)/FILE
         self.keep_seconds, self.max_bytes, self.prune_seconds = keep_seconds, max_bytes, prune_seconds
-        self.queue, self.dropped, self.failures = queue.Queue(queue_size), 0, 0
+        self.queue, self.dropped, self.failures, self.announced = queue.Queue(queue_size), 0, 0, set()
         self.thread = threading.Thread(target=self._run, name='trace-writer', daemon=True)
         self.thread.start()
 
@@ -225,12 +226,15 @@ class TraceStore:
         with db:
             db.execute('DELETE FROM jobs WHERE ts<?', (cutoff,))
             db.execute('DELETE FROM events WHERE ts<?', (cutoff,))
-        with db:
-            # Keep the newest rows whose running size fits the cap; the row that crosses it and all older ones go.
-            db.execute('DELETE FROM jobs WHERE id IN (SELECT id FROM '
-                       '(SELECT id, SUM(size) OVER (ORDER BY id DESC) AS running FROM jobs) WHERE running>?)',
-                       (self.max_bytes,))
-        db.execute('PRAGMA incremental_vacuum')
+        # The file (jobs, events, indexes) is never smaller than the summed job sizes, so a file under the cap
+        # needs no scan. Over it, trim to 90% so the next prunes are cheap again.
+        if self.path.stat().st_size > self.max_bytes:
+            with db:
+                # Keep the newest rows whose running size fits; the row that crosses the limit and all older ones go.
+                db.execute('DELETE FROM jobs WHERE id IN (SELECT id FROM '
+                           '(SELECT id, SUM(size) OVER (ORDER BY id DESC) AS running FROM jobs) WHERE running>?)',
+                           (self.max_bytes*0.9,))
+        db.execute('PRAGMA incremental_vacuum').fetchall()  # One row per freed page: unread, it frees only one.
 
 
 _stores, _lock = {}, threading.Lock()
@@ -249,7 +253,13 @@ def store_for(cfg):
             except (OSError, ValueError) as exc:
                 log.warning('trace_unavailable category=%s', type(exc).__name__)
                 _stores[directory] = None
-        return _stores[directory]
+        store = _stores[directory]
+        if store is not None and cfg.id not in store.announced:
+            # Jobs are written when they end; this marker lets a reader tell which run a log line belongs to.
+            store.announced.add(cfg.id)
+            store.submit('event', dict(ts=time.time(), run_id=RUN_ID, instance=cfg.id, task=None, version=None,
+                                       kind=RUN_STARTED, detail='{}'))
+        return store
 
 
 def close_stores(timeout=5):
@@ -320,6 +330,9 @@ class JobTrace:
 
     @staticmethod
     def failure(call, exc):
+        partial = getattr(exc, 'result', None)
+        if partial is not None:  # A reply the provider parsed and then rejected as cut off, filtered or empty.
+            JobTrace.response(call, partial)
         try:
             call.update(error=getattr(exc, 'code', None) or type(exc).__name__,
                         error_detail=clean(str(getattr(exc, 'detail', '') or ''), 1000), status=getattr(exc, 'status', None))

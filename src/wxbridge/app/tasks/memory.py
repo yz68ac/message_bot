@@ -185,5 +185,7 @@ class MemoryController:
                         record.update(state='quarantined', quarantined_at=now)
                     self.bot.journal.put_memory(record)
                 self.bot.journal.set("memory_error", code)
-            self.bot.log.warning("记忆延后 task=%s category=%s", record["id"] if record else None, code,
-                                 exc_info=self.bot.cfg.trace.enabled)
+            # 追踪开启时，意外异常只附带调用栈：不带异常消息和异常链，预期内的 memory_* 延后不附带。
+            where = (RuntimeError(code).with_traceback(exc.__traceback__)
+                     if self.bot.cfg.trace.enabled and code == type(exc).__name__ else None)
+            self.bot.log.warning("记忆延后 task=%s category=%s", record["id"] if record else None, code, exc_info=where)

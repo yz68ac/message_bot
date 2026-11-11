@@ -73,10 +73,29 @@ class ReaderTests(ReaderCase):
         self.assertEqual(self.reader.list(q='%')['total'], 1)
         self.assertEqual(self.reader.list(q='a\\b')['total'], 1)
 
-    def test_empty_replies_and_cut_off_calls_count_as_problems(self):
+    def test_failures_and_cut_off_calls_count_as_problems_but_a_textless_success_does_not(self):
         self.write([job_row(result=''), job_row(finish='length'), job_row(role='memory', result=''),
                     job_row(), job_row(ok=0, error='x')])
-        self.assertEqual(self.reader.list(problems=True)['total'], 3)
+        self.assertEqual([row['id'] for row in self.reader.list(problems=True)['rows']], [5, 2])
+
+    def event_row(self, kind, task=None, ts=None, run_id='r1', **detail):
+        return dict(ts=time.time() if ts is None else ts, run_id=run_id, instance='alpha', task=task, version=1,
+                    kind=kind, detail=json.dumps(detail))
+
+    def test_a_memory_job_does_not_show_the_reply_events_of_the_same_task_number(self):
+        self.write([job_row(role='memory', task=5), job_row(task=5)],
+                   [self.event_row('reply_final', task=5, chunks=['好'])])
+        self.assertEqual(self.reader.get(1)['events'], [])
+        self.assertEqual([item['kind'] for item in self.reader.get(2)['events']], ['reply_final'])
+
+    def test_participation_events_are_matched_by_their_messages_not_only_by_time(self):
+        now = time.time()
+        self.write([job_row(role='participation', task=None, ts=now-20, meta=json.dumps(dict(source_ids=[1, 2]))),
+                    job_row(role='participation', task=None, ts=now-10, meta=json.dumps(dict(source_ids=[3])))],
+                   [self.event_row('participation_decision', ts=now-19, source_ids=[1, 2], outcome='silent'),
+                    self.event_row('participation_decision', ts=now-9, source_ids=[3], outcome='approved')])
+        self.assertEqual([item['detail']['outcome'] for item in self.reader.get(1)['events']], ['silent'])
+        self.assertEqual([item['detail']['outcome'] for item in self.reader.get(2)['events']], ['approved'])
 
     def test_detail_has_calls_attempts_and_owner_events(self):
         seed_trace(self.directory)
@@ -162,6 +181,20 @@ class ReaderTests(ReaderCase):
             self.reader.locate('../x', 'reply', 5)
         with self.assertRaises(ManagementError):
             self.reader.locate('alpha', 'nope', 5)
+
+    def test_locate_stays_within_the_run_of_the_log_line_and_does_not_reach_the_retry(self):
+        now = time.time()
+        marker = lambda ago, run: dict(ts=now-ago, run_id=run, instance='alpha', task=None, version=None,
+                                       kind=trace.RUN_STARTED, detail='{}')
+        self.write([job_row(ts=now-1000, task=3, run_id='old'),
+                    job_row(ts=now-100, task=11, run_id='new', attempt=1), job_row(ts=now-97, task=11, run_id='new', attempt=2)],
+                   [marker(2000, 'old'), marker(500, 'new')])
+        # Task 3 of the new run is still running, so nothing is stored for it yet.
+        self.assertIsNone(self.reader.locate('alpha', 'reply', 3, at=now-50)['id'])
+        self.assertEqual(self.reader.locate('alpha', 'reply', 3, at=now-900)['id'], 1)
+        # The failure line of attempt 1, written before the retry was queued three seconds later.
+        self.assertEqual(self.reader.locate('alpha', 'reply', 11, at=now-99)['id'], 2)
+        self.assertEqual(self.reader.locate('alpha', 'reply', 11, at=now-90)['id'], 3)
 
 
 class LogLinkTests(unittest.TestCase):

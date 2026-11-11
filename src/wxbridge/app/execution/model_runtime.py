@@ -137,6 +137,7 @@ class ConversationModels:
                 token, traced = _scope.set((lane, self.cfg, job, metrics)), activate(trace)
                 try:
                     value = dict(ok=True, **self._execute(kind, payload, job), model_metrics=metrics)
+                    job.check()  # A result past its deadline or after cancellation is a failure in the trace too.
                     if trace:
                         trace.finish(kind=kind, ok=True, result=value, context=value.get('context_stats'))
                     return value

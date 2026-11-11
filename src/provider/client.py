@@ -274,7 +274,9 @@ class Client:
             values = _metrics.get()
             if values and record_error:
                 values[-1]['error'] = code
-            raise ModelError(code, retryable=code != 'output_filtered')
+            error = ModelError(code, retryable=code != 'output_filtered')
+            error.result = result  # What the model did produce, for diagnostics.
+            raise error
 
     def chat(self, messages):
         return (self.complete(messages, require_complete=True).get('content') or '').strip()

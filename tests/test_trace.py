@@ -2,6 +2,7 @@
 from dataclasses import replace
 import json
 import logging
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -11,7 +12,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from provider import ModelError, ModelResult
-from provider.client import _metrics
+from provider.client import Client, _metrics
 from tests.support.configuration import application, replace_config, update_config
 from tests.support.model_support import default_config
 from wxbridge.app.execution.model_runtime import ConversationModels
@@ -135,6 +136,16 @@ class StoreTests(TempCase):
             db.close()
         self.assertEqual([row['size'] for row in self.rows('SELECT size, ts FROM jobs ORDER BY id')], [100, 100])
         self.assertEqual(self.rows('SELECT COUNT(*) AS n FROM events')[0]['n'], 0)
+
+    def test_prune_skips_the_size_scan_under_the_cap_and_gives_freed_pages_back(self):
+        store = self.make(keep_seconds=1000)
+        now, blob = time.time(), os.urandom(200_000)
+        for _ in range(5):
+            store.submit('job', job_row(ts=now-5000, calls=blob, size=10**12))  # Old; a size scan would also drop the next.
+        store.submit('job', job_row(ts=now, size=10**12))
+        self.assertTrue(store.flush())  # The first write of a store also prunes.
+        self.assertEqual(self.rows('SELECT COUNT(*) AS n FROM jobs')[0]['n'], 1)
+        self.assertLess(store.path.stat().st_size, 100_000)  # A megabyte was written.
 
     def test_full_queue_drops_records_instead_of_blocking_the_caller(self):
         gate = Event()
@@ -371,12 +382,41 @@ class RecordedModelTests(TempCase):
         cfg = self.traced()
         record_event(cfg, 'reply_final', task=3, version=1, chunks=['一', '二'])
         self.assertTrue(trace.store_for(cfg).flush())
-        (event,) = self.rows('SELECT * FROM events')
+        started, event = self.rows('SELECT * FROM events ORDER BY id')
+        self.assertEqual((started['kind'], started['instance'], started['run_id']), (trace.RUN_STARTED, 'alpha', trace.RUN_ID))
         self.assertEqual((event['instance'], event['task'], event['kind'], json.loads(event['detail'])),
                          ('alpha', 3, 'reply_final', dict(chunks=['一', '二'])))
         record_event(update_config(cfg, 'trace', enabled=False), 'reply_final', task=4)
         record_event(object(), 'reply_final')
         self.assertTrue(trace.store_for(cfg).flush())
+        self.assertEqual(len(self.rows('SELECT * FROM events')), 2)  # One run marker per instance and process.
+
+    def test_a_reply_the_provider_rejected_as_incomplete_is_still_recorded(self):
+        cfg = self.traced()
+        def generate(request, **options):
+            self.metric()
+            _metrics.get()[-1]['finish_reason'] = 'length'
+            Client.check_complete(ModelResult({'content': '写到一半'}, 'length', dict(prompt_tokens=30, completion_tokens=4)),
+                                  record_error=False)
+        runtime = self.runtime(cfg, generate)
+        self.assertEqual(self.finish(runtime, task=1)['error'], 'output_limit')
+        (job,) = self.rows('SELECT * FROM jobs')
+        (call,) = decode_calls(job['calls'])
+        self.assertEqual((job['ok'], job['error'], job['finish'], job['tokens_out']), (0, 'output_limit', 'length', 4))
+        self.assertEqual((call['response'], call['error']), ({'content': '写到一半'}, 'output_limit'))
+
+    def test_a_result_that_arrives_after_the_deadline_is_recorded_as_a_failure(self):
+        cfg = self.traced()
+        runtime = self.runtime(cfg, Mock())
+        prompt = [dict(role='system', content='判断'), dict(role='user', content='{}')]
+        with patch('wxbridge.ai.background.participation.evaluate',
+                   side_effect=lambda *args, **kwargs: time.sleep(0.3) or dict(reply_to=[])):
+            job = runtime.submit('participation', (cfg, prompt, dict(source_ids=[1])), timeout=0.1)
+            result = job.future.result(timeout=3)
+        self.assertFalse(result['ok'])
+        self.assertTrue(trace.store_for(cfg).flush())
+        (row,) = self.rows('SELECT ok, error FROM jobs')
+        self.assertEqual((row['ok'], row['error']), (0, 'deadline_exceeded'))
         self.assertEqual(len(self.rows('SELECT * FROM events')), 1)
 
     def test_unavailable_directory_disables_tracing_without_breaking_the_job(self):
