@@ -172,7 +172,9 @@
     "max_messages": 2
   },
   "trace": {
-    "enabled": true
+    "enabled": true,
+    "keep_days": 14,
+    "max_megabytes": 300
   },
   "participation": {
     "enabled": false,

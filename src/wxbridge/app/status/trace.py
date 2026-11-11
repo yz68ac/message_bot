@@ -30,6 +30,7 @@ PROBLEMS = 'problems.log'
 RUN_STARTED = 'run_started'
 # Task ids restart from 1 when the runtime directory is wiped, so every record names its process run.
 RUN_ID = time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:4]
+# Retention defaults for a store used directly; instances bring their own through trace.keep_days / max_megabytes.
 KEEP_SECONDS, MAX_BYTES, PRUNE_SECONDS, QUEUE_SIZE = 14*86400, 300*1024*1024, 300, 256
 MAX_STRING, MAX_CALLS, MAX_TRACEBACK = 200_000, 40, 20_000
 JOB_ROLES = {'generate': 'reply', 'memory': 'memory', 'participation': 'participation', 'group_profile': 'group_profile'}
@@ -123,8 +124,15 @@ class TraceStore:
         self.path = Path(directory)/FILE
         self.keep_seconds, self.max_bytes, self.prune_seconds = keep_seconds, max_bytes, prune_seconds
         self.queue, self.dropped, self.failures, self.announced = queue.Queue(queue_size), 0, 0, set()
+        self.limits = {}
         self.thread = threading.Thread(target=self._run, name='trace-writer', daemon=True)
         self.thread.start()
+
+    def configure(self, instance, settings):
+        """Take an instance's limits. The file is shared, so the largest ones apply: nobody's records go early."""
+        self.limits[instance] = (settings.keep_days*86400, settings.max_megabytes*1024*1024)
+        limits = list(self.limits.values())
+        self.keep_seconds, self.max_bytes = max(keep for keep, _ in limits), max(size for _, size in limits)
 
     def submit(self, kind, row):
         try:
@@ -226,14 +234,18 @@ class TraceStore:
         with db:
             db.execute('DELETE FROM jobs WHERE ts<?', (cutoff,))
             db.execute('DELETE FROM events WHERE ts<?', (cutoff,))
-        # The file (jobs, events, indexes) is never smaller than the summed job sizes, so a file under the cap
-        # needs no scan. Over it, trim to 90% so the next prunes are cheap again.
+        # The cap is on the file: jobs, events and indexes. A file under it needs no scan; over it, trim to 90%
+        # so the next prunes are cheap again.
         if self.path.stat().st_size > self.max_bytes:
             with db:
+                events = db.execute('SELECT COALESCE(SUM(LENGTH(detail)+LENGTH(kind)+64), 0) FROM events').fetchone()[0]
                 # Keep the newest rows whose running size fits; the row that crosses the limit and all older ones go.
                 db.execute('DELETE FROM jobs WHERE id IN (SELECT id FROM '
                            '(SELECT id, SUM(size) OVER (ORDER BY id DESC) AS running FROM jobs) WHERE running>?)',
-                           (self.max_bytes*0.9,))
+                           (max(0, self.max_bytes*0.9-events),))
+                oldest = db.execute('SELECT MIN(ts) FROM jobs').fetchone()[0]
+                if oldest is not None:  # Events older than every remaining job describe records that are gone.
+                    db.execute('DELETE FROM events WHERE ts<?', (oldest,))
         db.execute('PRAGMA incremental_vacuum').fetchall()  # One row per freed page: unread, it frees only one.
 
 
@@ -254,6 +266,8 @@ def store_for(cfg):
                 log.warning('trace_unavailable category=%s', type(exc).__name__)
                 _stores[directory] = None
         store = _stores[directory]
+        if store is not None:
+            store.configure(cfg.id, cfg.trace)  # Every time: instance settings can change while the bot runs.
         if store is not None and cfg.id not in store.announced:
             # Jobs are written when they end; this marker lets a reader tell which run a log line belongs to.
             store.announced.add(cfg.id)

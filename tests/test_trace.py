@@ -137,6 +137,29 @@ class StoreTests(TempCase):
         self.assertEqual([row['size'] for row in self.rows('SELECT size, ts FROM jobs ORDER BY id')], [100, 100])
         self.assertEqual(self.rows('SELECT COUNT(*) AS n FROM events')[0]['n'], 0)
 
+    def test_the_size_cap_counts_events_and_drops_those_of_deleted_jobs(self):
+        store = self.make(keep_seconds=1000, max_bytes=1000)
+        now = time.time()
+        for age in (30, 20, 10):
+            store.submit('job', job_row(ts=now-age, size=300))
+        for age in (25, 15):
+            store.submit('event', dict(ts=now-age, run_id='r', instance='a', task=1, version=1, kind='reply_final', detail='{}'))
+        self.assertTrue(store.flush())
+        # 900 bytes of jobs alone would fit the 90% target; the events take their share of it.
+        self.assertEqual(len(self.rows('SELECT id FROM jobs')), 2)
+        (event,) = self.rows('SELECT ts FROM events')
+        self.assertAlmostEqual(event['ts'], now-15, places=3)
+
+    def test_instances_bring_their_limits_and_the_shared_store_applies_the_largest(self):
+        store = self.make()
+        limits = lambda days, megabytes: update_config(default_config(), 'trace', keep_days=days, max_megabytes=megabytes).trace
+        store.configure('alpha', limits(3, 500))
+        self.assertEqual((store.keep_seconds, store.max_bytes), (3*86400, 500*1024*1024))
+        store.configure('beta', limits(30, 20))
+        self.assertEqual((store.keep_seconds, store.max_bytes), (30*86400, 500*1024*1024))
+        store.configure('beta', limits(1, 20))
+        self.assertEqual((store.keep_seconds, store.max_bytes), (3*86400, 500*1024*1024))
+
     def test_prune_skips_the_size_scan_under_the_cap_and_gives_freed_pages_back(self):
         store = self.make(keep_seconds=1000)
         now, blob = time.time(), os.urandom(200_000)
@@ -390,6 +413,10 @@ class RecordedModelTests(TempCase):
         record_event(object(), 'reply_final')
         self.assertTrue(trace.store_for(cfg).flush())
         self.assertEqual(len(self.rows('SELECT * FROM events')), 2)  # One run marker per instance and process.
+        store = trace.store_for(update_config(cfg, 'trace', keep_days=2, max_megabytes=64))
+        self.assertEqual((store.keep_seconds, store.max_bytes), (2*86400, 64*1024*1024))
+        with self.assertRaises(ValueError):
+            update_config(cfg, 'trace', max_megabytes=1).trace.validate('trace')
 
     def test_a_reply_the_provider_rejected_as_incomplete_is_still_recorded(self):
         cfg = self.traced()

@@ -227,8 +227,13 @@ class ReplyStyleConfig(Section):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TraceConfig(Section):
-    """Development aid: keep full prompts, raw model replies and problems across restarts."""
+    """Development aid: keep full prompts, raw model replies and problems across restarts.
+
+    The instances of one account share a trace database, which applies the largest limits among them.
+    """
     enabled: bool = True
+    keep_days: int = field(default=14, metadata={'range': (1, 365), 'error': 'invalid_config_range'})
+    max_megabytes: int = field(default=300, metadata={'range': (10, 102400), 'error': 'invalid_config_range'})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

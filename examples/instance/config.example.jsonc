@@ -48,8 +48,12 @@
 
   // 调试追踪（开发阶段）。开启后把发给模型的完整提示词、模型原始回复和出错信息保存到
   // data/home/trace，重启后仍可在管理台“对话追踪”查看。内容含聊天原文，正式使用前请设为 false 并删除该目录。
+  // 记录最多保留 keep_days 天（1..365），数据库超过 max_megabytes MB（10..102400）时从最早的记录开始删除。
+  // 同一账号的实例共用一个数据库，按各实例中最大的值执行。
   "trace": {
-    "enabled": true
+    "enabled": true,
+    "keep_days": 14,
+    "max_megabytes": 300
   },
 
   // 这里填写 provider 连接名，不是模型 ID；内置 openai / anthropic / deepseek / gemini。
